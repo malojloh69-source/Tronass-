@@ -1,0 +1,1573 @@
+{
+  "schema": {
+    "category": {
+      "slug": "telegram",
+      "title": "Telegram",
+      "iconUrl": "/assets/categories/telegram.svg"
+    },
+    "filters": [
+      {
+        "key": "search",
+        "label": "Поиск по названию",
+        "type": "text",
+        "query": "searchString",
+        "icon": "Search"
+      },
+      {
+        "key": "price",
+        "label": "Цена",
+        "type": "number-range",
+        "queries": {
+          "from": "priceFrom",
+          "to": "priceTo"
+        },
+        "min": 0,
+        "icon": "BadgeDollarSign"
+      },
+      {
+        "key": "origin",
+        "label": "Происхождение",
+        "type": "select",
+        "query": "origin",
+        "optionsEndpoint": "/api/origins?category={slug}",
+        "icon": "Boxes"
+      },
+      {
+        "key": "excludeOrigin",
+        "label": "Исключить происхождение",
+        "type": "select",
+        "query": "not_origin",
+        "optionsEndpoint": "/api/origins?category={slug}",
+        "icon": "Boxes"
+      },
+      {
+        "key": "sellerUsername",
+        "label": "Поиск по продавцу",
+        "type": "text",
+        "query": "seller_username",
+        "icon": "UserRoundSearch"
+      },
+      {
+        "key": "country",
+        "label": "Страна",
+        "type": "select",
+        "query": "country",
+        "optionsEndpoint": "/api/countries",
+        "icon": "Globe2"
+      },
+      {
+        "key": "excludeCountry",
+        "label": "Исключить страну",
+        "type": "select",
+        "query": "not_country",
+        "optionsEndpoint": "/api/countries",
+        "icon": "Globe2"
+      },
+      {
+        "key": "contacts",
+        "label": "Количество контактов",
+        "type": "number-range",
+        "queries": {
+          "from": "contactsFrom",
+          "to": "contactsTo"
+        },
+        "min": 0,
+        "icon": "ContactRound"
+      },
+      {
+        "key": "dialogs",
+        "label": "Количество диалогов",
+        "type": "number-range",
+        "queries": {
+          "from": "dialogsFrom",
+          "to": "dialogsTo"
+        },
+        "min": 0,
+        "icon": "MessagesSquare"
+      },
+      {
+        "key": "channels",
+        "label": "Количество каналов",
+        "type": "number-range",
+        "queries": {
+          "from": "channelsFrom",
+          "to": "channelsTo"
+        },
+        "min": 0,
+        "icon": "Network",
+        "group": {
+          "key": "channels-and-chats",
+          "label": "Кол-во каналов и чатов",
+          "icon": "Network",
+          "order": 1
+        }
+      },
+      {
+        "key": "premium",
+        "label": "Telegram Premium",
+        "type": "boolean",
+        "query": "premium",
+        "options": [
+          {
+            "label": "Да",
+            "value": 1
+          },
+          {
+            "label": "Нет",
+            "value": 0
+          }
+        ],
+        "icon": "BadgeCheck"
+      },
+      {
+        "key": "premiumDaysRemaining",
+        "label": "Дней Premium осталось",
+        "type": "number",
+        "query": "premiumDaysRemaining",
+        "min": 0,
+        "icon": "Clock3"
+      },
+      {
+        "key": "spamblock",
+        "label": "Спам-блок",
+        "type": "boolean",
+        "query": "spamblock",
+        "options": [
+          {
+            "label": "Да",
+            "value": 1
+          },
+          {
+            "label": "Нет",
+            "value": 0
+          }
+        ],
+        "icon": "ShieldBan"
+      },
+      {
+        "key": "spamblockGeo",
+        "label": "Гео спам-блок",
+        "type": "boolean",
+        "query": "spamblock_geo",
+        "options": [
+          {
+            "label": "Да",
+            "value": 1
+          },
+          {
+            "label": "Нет",
+            "value": 0
+          }
+        ],
+        "icon": "MapPin"
+      },
+      {
+        "key": "twoFactor",
+        "label": "Двухфакторная аутентификация",
+        "type": "boolean",
+        "query": "two_fa",
+        "options": [
+          {
+            "label": "Да",
+            "value": 1
+          },
+          {
+            "label": "Нет",
+            "value": 0
+          }
+        ],
+        "icon": "ShieldCheck"
+      },
+      {
+        "key": "age",
+        "label": "Возраст аккаунта",
+        "type": "number-range",
+        "queries": {
+          "from": "ageFrom",
+          "to": "ageTo"
+        },
+        "min": 0,
+        "icon": "CircleUserRound"
+      },
+      {
+        "key": "idLength",
+        "label": "Длина ID",
+        "type": "number-range",
+        "queries": {
+          "from": "idLengthFrom",
+          "to": "idLengthTo"
+        },
+        "min": 0,
+        "icon": "ContactRound"
+      },
+      {
+        "key": "stars",
+        "label": "Звёзды",
+        "type": "number-range",
+        "queries": {
+          "from": "starsFrom",
+          "to": "starsTo"
+        },
+        "min": 0,
+        "icon": "Star"
+      },
+      {
+        "key": "ratingLevel",
+        "label": "Уровень рейтинга",
+        "type": "number-range",
+        "queries": {
+          "from": "raitingLevelFrom",
+          "to": "raitingLevelTo"
+        },
+        "min": 0,
+        "icon": "Award"
+      },
+      {
+        "key": "ratingStars",
+        "label": "Звёзды рейтинга",
+        "type": "number-range",
+        "queries": {
+          "from": "raitingStarsFrom",
+          "to": "raitingStarsTo"
+        },
+        "min": 0,
+        "icon": "Crown"
+      },
+      {
+        "key": "chats",
+        "label": "Количество чатов",
+        "type": "number-range",
+        "queries": {
+          "from": "chatsFrom",
+          "to": "chatsTo"
+        },
+        "min": 0,
+        "icon": "Network",
+        "group": {
+          "key": "channels-and-chats",
+          "label": "Кол-во каналов и чатов",
+          "icon": "Network",
+          "order": 2
+        }
+      },
+      {
+        "key": "adminChannels",
+        "label": "Админские каналы",
+        "type": "number-range",
+        "queries": {
+          "from": "adminChannelsFrom",
+          "to": "adminChannelsTo"
+        },
+        "min": 0,
+        "icon": "Megaphone",
+        "group": {
+          "key": "admin-channels",
+          "label": "Кол-во админ. каналов",
+          "icon": "Megaphone",
+          "order": 1
+        }
+      },
+      {
+        "key": "adminChannelsSubscribers",
+        "label": "Подписчики админских каналов",
+        "type": "number-range",
+        "queries": {
+          "from": "adminChannelsSubFrom",
+          "to": "adminChannelsSubTo"
+        },
+        "min": 0,
+        "icon": "Megaphone",
+        "group": {
+          "key": "admin-channels",
+          "label": "Кол-во админ. каналов",
+          "icon": "Megaphone",
+          "order": 2
+        }
+      },
+      {
+        "key": "adminChats",
+        "label": "Админские чаты",
+        "type": "number-range",
+        "queries": {
+          "from": "adminChatsFrom",
+          "to": "adminChatsTo"
+        },
+        "min": 0,
+        "icon": "MessageSquareMore",
+        "group": {
+          "key": "admin-chats",
+          "label": "Кол-во админ. чатов",
+          "icon": "MessageSquareMore",
+          "order": 1
+        }
+      },
+      {
+        "key": "adminChatsSubscribers",
+        "label": "Участники админских чатов",
+        "type": "number-range",
+        "queries": {
+          "from": "adminChatsSubFrom",
+          "to": "adminChatsSubTo"
+        },
+        "min": 0,
+        "icon": "MessageSquareMore",
+        "group": {
+          "key": "admin-chats",
+          "label": "Кол-во админ. чатов",
+          "icon": "MessageSquareMore",
+          "order": 2
+        }
+      },
+      {
+        "key": "giftsRegular",
+        "label": "Обычные подарки",
+        "type": "number-range",
+        "queries": {
+          "from": "giftsRegularFrom",
+          "to": "giftsRegularTo"
+        },
+        "min": 0,
+        "icon": "Gift",
+        "group": {
+          "key": "gifts",
+          "label": "Подарки",
+          "icon": "Gift",
+          "order": 1
+        }
+      },
+      {
+        "key": "giftsNft",
+        "label": "NFT-подарки",
+        "type": "number-range",
+        "queries": {
+          "from": "giftsNftFrom",
+          "to": "giftsNftTo"
+        },
+        "min": 0,
+        "icon": "Gift",
+        "group": {
+          "key": "gifts",
+          "label": "Подарки",
+          "icon": "Gift",
+          "order": 2
+        }
+      },
+      {
+        "key": "settle",
+        "label": "Фильтр по минимальной отлёжке, дней",
+        "type": "number",
+        "query": "settle",
+        "min": 0,
+        "icon": "BedDouble"
+      }
+    ]
+  },
+  "countries": [
+    {
+      "value": "238",
+      "label": "Австралия",
+      "code": "AU"
+    },
+    {
+      "value": "239",
+      "label": "Австрия",
+      "code": "AT"
+    },
+    {
+      "value": "240",
+      "label": "Азербайджан",
+      "code": "AZ"
+    },
+    {
+      "value": "241",
+      "label": "Албания",
+      "code": "AL"
+    },
+    {
+      "value": "242",
+      "label": "Алжир",
+      "code": "DZ"
+    },
+    {
+      "value": "243",
+      "label": "Американские Виргинские о-ва",
+      "code": "ZZ"
+    },
+    {
+      "value": "244",
+      "label": "Американское Самоа",
+      "code": "ZZ"
+    },
+    {
+      "value": "245",
+      "label": "Ангилья",
+      "code": "ZZ"
+    },
+    {
+      "value": "246",
+      "label": "Ангола",
+      "code": "AO"
+    },
+    {
+      "value": "247",
+      "label": "Андорра",
+      "code": "AD"
+    },
+    {
+      "value": "248",
+      "label": "Анонимные номера",
+      "code": "001"
+    },
+    {
+      "value": "249",
+      "label": "Антигуа и Барбуда",
+      "code": "ZZ"
+    },
+    {
+      "value": "250",
+      "label": "Аргентина",
+      "code": "AR"
+    },
+    {
+      "value": "251",
+      "label": "Армения",
+      "code": "AM"
+    },
+    {
+      "value": "252",
+      "label": "Аруба",
+      "code": "AW"
+    },
+    {
+      "value": "253",
+      "label": "Афганистан",
+      "code": "AF"
+    },
+    {
+      "value": "254",
+      "label": "Багамы",
+      "code": "ZZ"
+    },
+    {
+      "value": "255",
+      "label": "Бангладеш",
+      "code": "BD"
+    },
+    {
+      "value": "256",
+      "label": "Барбадос",
+      "code": "ZZ"
+    },
+    {
+      "value": "257",
+      "label": "Бахрейн",
+      "code": "BH"
+    },
+    {
+      "value": "258",
+      "label": "Беларусь",
+      "code": "BY"
+    },
+    {
+      "value": "259",
+      "label": "Белиз",
+      "code": "BZ"
+    },
+    {
+      "value": "260",
+      "label": "Бельгия",
+      "code": "BE"
+    },
+    {
+      "value": "261",
+      "label": "Бенин",
+      "code": "BJ"
+    },
+    {
+      "value": "262",
+      "label": "Бермудские Острова",
+      "code": "ZZ"
+    },
+    {
+      "value": "263",
+      "label": "Болгария",
+      "code": "BG"
+    },
+    {
+      "value": "264",
+      "label": "Боливия",
+      "code": "BO"
+    },
+    {
+      "value": "265",
+      "label": "Бонэйр, Синт-Эстатиус и Саба",
+      "code": "CW"
+    },
+    {
+      "value": "266",
+      "label": "Босния и Герцеговина",
+      "code": "BA"
+    },
+    {
+      "value": "267",
+      "label": "Ботсвана",
+      "code": "BW"
+    },
+    {
+      "value": "268",
+      "label": "Бразилия",
+      "code": "BR"
+    },
+    {
+      "value": "269",
+      "label": "Британские Виргинские о-ва",
+      "code": "ZZ"
+    },
+    {
+      "value": "270",
+      "label": "Бруней",
+      "code": "BN"
+    },
+    {
+      "value": "271",
+      "label": "Буркина-Фасо",
+      "code": "BF"
+    },
+    {
+      "value": "272",
+      "label": "Бурунди",
+      "code": "BI"
+    },
+    {
+      "value": "273",
+      "label": "Бутан",
+      "code": "BT"
+    },
+    {
+      "value": "274",
+      "label": "Вануату",
+      "code": "VU"
+    },
+    {
+      "value": "275",
+      "label": "Великобритания",
+      "code": "GB"
+    },
+    {
+      "value": "276",
+      "label": "Венгрия",
+      "code": "HU"
+    },
+    {
+      "value": "277",
+      "label": "Венесуэла",
+      "code": "VE"
+    },
+    {
+      "value": "278",
+      "label": "Восточный Тимор",
+      "code": "TL"
+    },
+    {
+      "value": "279",
+      "label": "Вьетнам",
+      "code": "VN"
+    },
+    {
+      "value": "280",
+      "label": "Габон",
+      "code": "GA"
+    },
+    {
+      "value": "281",
+      "label": "Гаити",
+      "code": "HT"
+    },
+    {
+      "value": "282",
+      "label": "Гайана",
+      "code": "GY"
+    },
+    {
+      "value": "283",
+      "label": "Гамбия",
+      "code": "GM"
+    },
+    {
+      "value": "284",
+      "label": "Гана",
+      "code": "GH"
+    },
+    {
+      "value": "285",
+      "label": "Гваделупа",
+      "code": "GP"
+    },
+    {
+      "value": "286",
+      "label": "Гватемала",
+      "code": "GT"
+    },
+    {
+      "value": "287",
+      "label": "Гвиана",
+      "code": "GF"
+    },
+    {
+      "value": "288",
+      "label": "Гвинея",
+      "code": "GN"
+    },
+    {
+      "value": "289",
+      "label": "Гвинея-Бисау",
+      "code": "GW"
+    },
+    {
+      "value": "290",
+      "label": "Германия",
+      "code": "DE"
+    },
+    {
+      "value": "291",
+      "label": "Гибралтар",
+      "code": "GI"
+    },
+    {
+      "value": "292",
+      "label": "Гондурас",
+      "code": "HN"
+    },
+    {
+      "value": "293",
+      "label": "Гонконг",
+      "code": "HK"
+    },
+    {
+      "value": "294",
+      "label": "Гренада",
+      "code": "ZZ"
+    },
+    {
+      "value": "295",
+      "label": "Гренландия",
+      "code": "GL"
+    },
+    {
+      "value": "296",
+      "label": "Греция",
+      "code": "GR"
+    },
+    {
+      "value": "297",
+      "label": "Грузия",
+      "code": "GE"
+    },
+    {
+      "value": "298",
+      "label": "Гуам",
+      "code": "ZZ"
+    },
+    {
+      "value": "299",
+      "label": "Дания",
+      "code": "DK"
+    },
+    {
+      "value": "300",
+      "label": "Джибути",
+      "code": "DJ"
+    },
+    {
+      "value": "301",
+      "label": "Диего-Гарсия",
+      "code": "IO"
+    },
+    {
+      "value": "302",
+      "label": "Доминика",
+      "code": "ZZ"
+    },
+    {
+      "value": "303",
+      "label": "Доминиканская Республика",
+      "code": "ZZ"
+    },
+    {
+      "value": "304",
+      "label": "Доминиканская Республика",
+      "code": "ZZ"
+    },
+    {
+      "value": "305",
+      "label": "Доминиканская Республика",
+      "code": "ZZ"
+    },
+    {
+      "value": "306",
+      "label": "Египет",
+      "code": "EG"
+    },
+    {
+      "value": "307",
+      "label": "Замбия",
+      "code": "ZM"
+    },
+    {
+      "value": "308",
+      "label": "Зимбабве",
+      "code": "ZW"
+    },
+    {
+      "value": "309",
+      "label": "Израиль",
+      "code": "IL"
+    },
+    {
+      "value": "310",
+      "label": "Индия",
+      "code": "IN"
+    },
+    {
+      "value": "311",
+      "label": "Индонезия",
+      "code": "ID"
+    },
+    {
+      "value": "312",
+      "label": "Иордания",
+      "code": "JO"
+    },
+    {
+      "value": "313",
+      "label": "Ирак",
+      "code": "IQ"
+    },
+    {
+      "value": "314",
+      "label": "Иран",
+      "code": "IR"
+    },
+    {
+      "value": "315",
+      "label": "Ирландия",
+      "code": "IE"
+    },
+    {
+      "value": "316",
+      "label": "Исландия",
+      "code": "IS"
+    },
+    {
+      "value": "317",
+      "label": "Испания",
+      "code": "ES"
+    },
+    {
+      "value": "318",
+      "label": "Италия",
+      "code": "IT"
+    },
+    {
+      "value": "319",
+      "label": "Йемен",
+      "code": "YE"
+    },
+    {
+      "value": "320",
+      "label": "Кабо-Верде",
+      "code": "CV"
+    },
+    {
+      "value": "321",
+      "label": "Казахстан",
+      "code": "KZ"
+    },
+    {
+      "value": "322",
+      "label": "Каймановы острова",
+      "code": "ZZ"
+    },
+    {
+      "value": "323",
+      "label": "Камбоджа",
+      "code": "KH"
+    },
+    {
+      "value": "324",
+      "label": "Камерун",
+      "code": "CM"
+    },
+    {
+      "value": "325",
+      "label": "Канада",
+      "code": "CA"
+    },
+    {
+      "value": "326",
+      "label": "Катар",
+      "code": "QA"
+    },
+    {
+      "value": "327",
+      "label": "Кения",
+      "code": "KE"
+    },
+    {
+      "value": "328",
+      "label": "Кипр",
+      "code": "CY"
+    },
+    {
+      "value": "329",
+      "label": "Киргизия",
+      "code": "KG"
+    },
+    {
+      "value": "330",
+      "label": "Кирибати",
+      "code": "KI"
+    },
+    {
+      "value": "331",
+      "label": "Китай",
+      "code": "CN"
+    },
+    {
+      "value": "332",
+      "label": "Колумбия",
+      "code": "CO"
+    },
+    {
+      "value": "333",
+      "label": "Коморы",
+      "code": "KM"
+    },
+    {
+      "value": "334",
+      "label": "Конго (ДРК)",
+      "code": "CD"
+    },
+    {
+      "value": "335",
+      "label": "Конго (Республика)",
+      "code": "CG"
+    },
+    {
+      "value": "336",
+      "label": "Косово",
+      "code": "XK"
+    },
+    {
+      "value": "337",
+      "label": "Коста-Рика",
+      "code": "CR"
+    },
+    {
+      "value": "338",
+      "label": "Кот-д'Ивуар",
+      "code": "CI"
+    },
+    {
+      "value": "339",
+      "label": "Куба",
+      "code": "CU"
+    },
+    {
+      "value": "340",
+      "label": "Кувейт",
+      "code": "KW"
+    },
+    {
+      "value": "341",
+      "label": "Кюрасао",
+      "code": "CW"
+    },
+    {
+      "value": "342",
+      "label": "Лаос",
+      "code": "LA"
+    },
+    {
+      "value": "343",
+      "label": "Латвия",
+      "code": "LV"
+    },
+    {
+      "value": "344",
+      "label": "Лесото",
+      "code": "LS"
+    },
+    {
+      "value": "345",
+      "label": "Либерия",
+      "code": "LR"
+    },
+    {
+      "value": "346",
+      "label": "Ливан",
+      "code": "LB"
+    },
+    {
+      "value": "347",
+      "label": "Ливия",
+      "code": "LY"
+    },
+    {
+      "value": "348",
+      "label": "Литва",
+      "code": "LT"
+    },
+    {
+      "value": "349",
+      "label": "Лихтенштейн",
+      "code": "LI"
+    },
+    {
+      "value": "350",
+      "label": "Люксембург",
+      "code": "LU"
+    },
+    {
+      "value": "351",
+      "label": "Маврикий",
+      "code": "MU"
+    },
+    {
+      "value": "352",
+      "label": "Мавритания",
+      "code": "MR"
+    },
+    {
+      "value": "353",
+      "label": "Мадагаскар",
+      "code": "MG"
+    },
+    {
+      "value": "354",
+      "label": "Макао",
+      "code": "MO"
+    },
+    {
+      "value": "355",
+      "label": "Малави",
+      "code": "MW"
+    },
+    {
+      "value": "356",
+      "label": "Малайзия",
+      "code": "MY"
+    },
+    {
+      "value": "357",
+      "label": "Мали",
+      "code": "ML"
+    },
+    {
+      "value": "358",
+      "label": "Мальдивы",
+      "code": "MV"
+    },
+    {
+      "value": "359",
+      "label": "Мальта",
+      "code": "MT"
+    },
+    {
+      "value": "360",
+      "label": "Марокко",
+      "code": "MA"
+    },
+    {
+      "value": "361",
+      "label": "Мартиника",
+      "code": "MQ"
+    },
+    {
+      "value": "362",
+      "label": "Маршалловы Острова",
+      "code": "MH"
+    },
+    {
+      "value": "363",
+      "label": "Мексика",
+      "code": "MX"
+    },
+    {
+      "value": "364",
+      "label": "Микронезия",
+      "code": "FM"
+    },
+    {
+      "value": "365",
+      "label": "Мозамбик",
+      "code": "MZ"
+    },
+    {
+      "value": "366",
+      "label": "Молдавия",
+      "code": "MD"
+    },
+    {
+      "value": "367",
+      "label": "Монако",
+      "code": "MC"
+    },
+    {
+      "value": "368",
+      "label": "Монголия",
+      "code": "MN"
+    },
+    {
+      "value": "369",
+      "label": "Монтсеррат",
+      "code": "ZZ"
+    },
+    {
+      "value": "370",
+      "label": "Мьянма",
+      "code": "MM"
+    },
+    {
+      "value": "371",
+      "label": "Намибия",
+      "code": "NA"
+    },
+    {
+      "value": "372",
+      "label": "Науру",
+      "code": "NR"
+    },
+    {
+      "value": "373",
+      "label": "Непал",
+      "code": "NP"
+    },
+    {
+      "value": "374",
+      "label": "Нигер",
+      "code": "NE"
+    },
+    {
+      "value": "375",
+      "label": "Нигерия",
+      "code": "NG"
+    },
+    {
+      "value": "376",
+      "label": "Нидерланды",
+      "code": "NL"
+    },
+    {
+      "value": "377",
+      "label": "Никарагуа",
+      "code": "NI"
+    },
+    {
+      "value": "378",
+      "label": "Ниуэ",
+      "code": "NU"
+    },
+    {
+      "value": "379",
+      "label": "Новая Зеландия",
+      "code": "NZ"
+    },
+    {
+      "value": "380",
+      "label": "Новая Каледония",
+      "code": "NC"
+    },
+    {
+      "value": "381",
+      "label": "Норвегия",
+      "code": "NO"
+    },
+    {
+      "value": "382",
+      "label": "ОАЭ",
+      "code": "AE"
+    },
+    {
+      "value": "383",
+      "label": "Оман",
+      "code": "OM"
+    },
+    {
+      "value": "384",
+      "label": "Остров Норфолк",
+      "code": "NF"
+    },
+    {
+      "value": "385",
+      "label": "Остров Святой Елены",
+      "code": "AC"
+    },
+    {
+      "value": "386",
+      "label": "Остров Святой Елены",
+      "code": "SH"
+    },
+    {
+      "value": "387",
+      "label": "Острова Кука",
+      "code": "CK"
+    },
+    {
+      "value": "388",
+      "label": "Пакистан",
+      "code": "PK"
+    },
+    {
+      "value": "389",
+      "label": "Палау",
+      "code": "PW"
+    },
+    {
+      "value": "390",
+      "label": "Палестина",
+      "code": "PS"
+    },
+    {
+      "value": "391",
+      "label": "Панама",
+      "code": "PA"
+    },
+    {
+      "value": "392",
+      "label": "Папуа — Новая Гвинея",
+      "code": "PG"
+    },
+    {
+      "value": "393",
+      "label": "Парагвай",
+      "code": "PY"
+    },
+    {
+      "value": "394",
+      "label": "Перу",
+      "code": "PE"
+    },
+    {
+      "value": "395",
+      "label": "Польша",
+      "code": "PL"
+    },
+    {
+      "value": "396",
+      "label": "Португалия",
+      "code": "PT"
+    },
+    {
+      "value": "397",
+      "label": "Пуэрто-Рико",
+      "code": "ZZ"
+    },
+    {
+      "value": "398",
+      "label": "Пуэрто-Рико",
+      "code": "ZZ"
+    },
+    {
+      "value": "399",
+      "label": "Реюньон",
+      "code": "RE"
+    },
+    {
+      "value": "400",
+      "label": "Россия",
+      "code": "RU"
+    },
+    {
+      "value": "401",
+      "label": "Руанда",
+      "code": "RW"
+    },
+    {
+      "value": "402",
+      "label": "Румыния",
+      "code": "RO"
+    },
+    {
+      "value": "403",
+      "label": "Сальвадор",
+      "code": "SV"
+    },
+    {
+      "value": "404",
+      "label": "Самоа",
+      "code": "WS"
+    },
+    {
+      "value": "405",
+      "label": "Сан-Марино",
+      "code": "SM"
+    },
+    {
+      "value": "406",
+      "label": "Сан-Томе и Принсипи",
+      "code": "ST"
+    },
+    {
+      "value": "407",
+      "label": "Саудовская Аравия",
+      "code": "SA"
+    },
+    {
+      "value": "408",
+      "label": "Северная Корея",
+      "code": "KP"
+    },
+    {
+      "value": "409",
+      "label": "Северная Македония",
+      "code": "MK"
+    },
+    {
+      "value": "410",
+      "label": "Северные Марианские Острова",
+      "code": "ZZ"
+    },
+    {
+      "value": "411",
+      "label": "Сейшелы",
+      "code": "SC"
+    },
+    {
+      "value": "412",
+      "label": "Сен-Пьер и Микелон",
+      "code": "PM"
+    },
+    {
+      "value": "413",
+      "label": "Сенегал",
+      "code": "SN"
+    },
+    {
+      "value": "414",
+      "label": "Сент-Винсент и Гренадины",
+      "code": "ZZ"
+    },
+    {
+      "value": "415",
+      "label": "Сент-Китс и Невис",
+      "code": "ZZ"
+    },
+    {
+      "value": "416",
+      "label": "Сент-Люсия",
+      "code": "ZZ"
+    },
+    {
+      "value": "417",
+      "label": "Сербия",
+      "code": "RS"
+    },
+    {
+      "value": "418",
+      "label": "Сингапур",
+      "code": "SG"
+    },
+    {
+      "value": "419",
+      "label": "Синт-Мартен",
+      "code": "ZZ"
+    },
+    {
+      "value": "420",
+      "label": "Сирия",
+      "code": "SY"
+    },
+    {
+      "value": "421",
+      "label": "Словакия",
+      "code": "SK"
+    },
+    {
+      "value": "422",
+      "label": "Словения",
+      "code": "SI"
+    },
+    {
+      "value": "423",
+      "label": "Соломоновы Острова",
+      "code": "SB"
+    },
+    {
+      "value": "424",
+      "label": "Сомали",
+      "code": "SO"
+    },
+    {
+      "value": "425",
+      "label": "Судан",
+      "code": "SD"
+    },
+    {
+      "value": "426",
+      "label": "Суринам",
+      "code": "SR"
+    },
+    {
+      "value": "427",
+      "label": "США",
+      "code": "US"
+    },
+    {
+      "value": "428",
+      "label": "Сьерра-Леоне",
+      "code": "SL"
+    },
+    {
+      "value": "429",
+      "label": "Таджикистан",
+      "code": "TJ"
+    },
+    {
+      "value": "430",
+      "label": "Таиланд",
+      "code": "TH"
+    },
+    {
+      "value": "431",
+      "label": "Тайвань",
+      "code": "TW"
+    },
+    {
+      "value": "432",
+      "label": "Танзания",
+      "code": "TZ"
+    },
+    {
+      "value": "433",
+      "label": "Тёркс и Кайкос",
+      "code": "ZZ"
+    },
+    {
+      "value": "434",
+      "label": "Того",
+      "code": "TG"
+    },
+    {
+      "value": "435",
+      "label": "Токелау",
+      "code": "TK"
+    },
+    {
+      "value": "436",
+      "label": "Тонга",
+      "code": "TO"
+    },
+    {
+      "value": "437",
+      "label": "Тринидад и Тобаго",
+      "code": "ZZ"
+    },
+    {
+      "value": "438",
+      "label": "Тувалу",
+      "code": "TV"
+    },
+    {
+      "value": "439",
+      "label": "Тунис",
+      "code": "TN"
+    },
+    {
+      "value": "440",
+      "label": "Туркменистан",
+      "code": "TM"
+    },
+    {
+      "value": "441",
+      "label": "Турция",
+      "code": "TR"
+    },
+    {
+      "value": "442",
+      "label": "Уганда",
+      "code": "UG"
+    },
+    {
+      "value": "443",
+      "label": "Узбекистан",
+      "code": "UZ"
+    },
+    {
+      "value": "444",
+      "label": "Украина",
+      "code": "UA"
+    },
+    {
+      "value": "445",
+      "label": "Уоллис и Футуна",
+      "code": "WF"
+    },
+    {
+      "value": "446",
+      "label": "Уругвай",
+      "code": "UY"
+    },
+    {
+      "value": "447",
+      "label": "Фарерские острова",
+      "code": "FO"
+    },
+    {
+      "value": "448",
+      "label": "Фиджи",
+      "code": "FJ"
+    },
+    {
+      "value": "449",
+      "label": "Филиппины",
+      "code": "PH"
+    },
+    {
+      "value": "450",
+      "label": "Финляндия",
+      "code": "FI"
+    },
+    {
+      "value": "451",
+      "label": "Фолклендские острова",
+      "code": "FK"
+    },
+    {
+      "value": "452",
+      "label": "Франция",
+      "code": "FR"
+    },
+    {
+      "value": "453",
+      "label": "Французская Полинезия",
+      "code": "PF"
+    },
+    {
+      "value": "454",
+      "label": "Хорватия",
+      "code": "HR"
+    },
+    {
+      "value": "455",
+      "label": "ЦАР",
+      "code": "CF"
+    },
+    {
+      "value": "456",
+      "label": "Чад",
+      "code": "TD"
+    },
+    {
+      "value": "457",
+      "label": "Черногория",
+      "code": "ME"
+    },
+    {
+      "value": "458",
+      "label": "Чехия",
+      "code": "CZ"
+    },
+    {
+      "value": "459",
+      "label": "Чили",
+      "code": "CL"
+    },
+    {
+      "value": "460",
+      "label": "Швейцария",
+      "code": "CH"
+    },
+    {
+      "value": "461",
+      "label": "Швеция",
+      "code": "SE"
+    },
+    {
+      "value": "462",
+      "label": "Шри-Ланка",
+      "code": "LK"
+    },
+    {
+      "value": "463",
+      "label": "Эквадор",
+      "code": "EC"
+    },
+    {
+      "value": "464",
+      "label": "Экваториальная Гвинея",
+      "code": "GQ"
+    },
+    {
+      "value": "465",
+      "label": "Эритрея",
+      "code": "ER"
+    },
+    {
+      "value": "466",
+      "label": "Эсватини",
+      "code": "SZ"
+    },
+    {
+      "value": "467",
+      "label": "Эстония",
+      "code": "EE"
+    },
+    {
+      "value": "468",
+      "label": "Эфиопия",
+      "code": "ET"
+    },
+    {
+      "value": "469",
+      "label": "ЮАР",
+      "code": "ZA"
+    },
+    {
+      "value": "470",
+      "label": "Южная Корея",
+      "code": "KR"
+    },
+    {
+      "value": "471",
+      "label": "Южный Судан",
+      "code": "SS"
+    },
+    {
+      "value": "472",
+      "label": "Ямайка",
+      "code": "ZZ"
+    },
+    {
+      "value": "473",
+      "label": "Япония",
+      "code": "JP"
+    }
+  ],
+  "origins": [
+    {
+      "value": "1",
+      "label": "Брут"
+    },
+    {
+      "value": "2",
+      "label": "Фишинг"
+    },
+    {
+      "value": "3",
+      "label": "Саморег"
+    },
+    {
+      "value": "4",
+      "label": "Авторег"
+    },
+    {
+      "value": "5",
+      "label": "Перепродажа"
+    },
+    {
+      "value": "6",
+      "label": "Стиллер"
+    }
+  ]
+}

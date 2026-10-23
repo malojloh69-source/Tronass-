@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Tronaccs listing notifications. Python 3.10+, standard library only."""
+"""Tronaccs configurable tracker. Python 3.10+, standard library only."""
 from __future__ import annotations
 
 import argparse
+import hashlib
 import html
 import json
 import logging
@@ -11,7 +12,8 @@ import signal
 import sqlite3
 import threading
 import time
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -20,6 +22,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from filters import Catalog, DEFAULT_FILTERS, canonical, matches
+
 API = "https://api.tronaccs.market"
 SITE = "https://tronaccs.market"
 ROOT = Path(__file__).resolve().parent
@@ -27,22 +31,36 @@ LOG = logging.getLogger("tron-rating")
 
 
 class ServiceError(Exception):
-    def __init__(self, message, code=0, retry_after=0):
+    def __init__(self, message, code=0, retry_after=0, description=""):
         super().__init__(message)
         self.code = code
         self.retry_after = max(0, float(retry_after))
+        self.description = description
 
 
 class SchemaError(ServiceError):
     pass
 
 
-def request_json(url, payload=None, timeout=30):
-    headers = {"User-Agent": "TronRatingWatcher/1.0", "Accept": "application/json"}
+def request_json(url, payload=None, timeout=30, files=None):
+    headers = {"User-Agent": "TronRatingWatcher/2.0", "Accept": "application/json"}
     if url.startswith(API + "/"):
         headers.update({"Origin": SITE, "Referer": SITE + "/"})
     body = None
-    if payload is not None:
+    if files:
+        boundary = "tronaccs-" + uuid.uuid4().hex
+        parts = []
+        for key, value in (payload or {}).items():
+            value = json.dumps(value) if isinstance(value, (dict, list, bool)) else str(value)
+            parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"\r\n\r\n{value}\r\n'.encode())
+        for key, path in files.items():
+            path = Path(path)
+            mime = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
+            parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"; filename="{path.name}"\r\nContent-Type: {mime}\r\n\r\n'.encode()
+                         + path.read_bytes() + b"\r\n")
+        body = b"".join(parts) + f"--{boundary}--\r\n".encode()
+        headers["Content-Type"] = "multipart/form-data; boundary=" + boundary
+    elif payload is not None:
         headers["Content-Type"] = "application/json"
         body = json.dumps(payload).encode()
     try:
@@ -53,6 +71,7 @@ def request_json(url, payload=None, timeout=30):
             return json.loads(raw)
     except HTTPError as exc:
         retry = exc.headers.get("Retry-After", "0")
+        data = {}
         try:
             data = json.loads(exc.read(65536))
             retry = data.get("parameters", {}).get("retry_after", retry)
@@ -65,7 +84,8 @@ def request_json(url, payload=None, timeout=30):
         # Never log URLs: Telegram URLs contain the bot token.
         message = ("Tronaccs отклонил запрос (HTTP 403); проверьте доступ с вашего хостинга"
                    if exc.code == 403 and url.startswith(API + "/") else f"Сервис вернул HTTP {exc.code}")
-        raise ServiceError(message, exc.code, retry) from None
+        description = str(data.get("description", ""))[:300] if isinstance(data, dict) else ""
+        raise ServiceError(message, exc.code, retry, description) from None
     except (URLError, TimeoutError, OSError):
         raise ServiceError("Ошибка сети или тайм-аут") from None
     except (ValueError, UnicodeError):
@@ -90,6 +110,7 @@ class Listing:
     published: float
     country: str
     premium: bool
+    attributes: dict = field(default_factory=dict)
 
     @classmethod
     def parse(cls, raw):
@@ -111,10 +132,15 @@ class Listing:
         except (KeyError, TypeError, AttributeError, ValueError, InvalidOperation):
             raise SchemaError("Некорректная цена или дата объявления") from None
         country = tg.get("country") or {}
-        return cls(item_id, str(raw.get("title") or "Аккаунт Telegram")[:500],
+        attributes = {key: tg[key] for key in ("raiting_stars", "stars", "contacts", "dialogs", "channels", "chats",
+                      "two_factor", "spamblock", "admin_channels_count", "admin_chats_count") if key in tg}
+        attributes.update({"country_id": country.get("id"), "country_code": country.get("countryCode"),
+                           "origin_id": (raw.get("item_origin") or {}).get("id"),
+                           "seller": (raw.get("seller") or {}).get("username")})
+        return cls(item_id, str(raw.get("title") or "Аккаунт Telegram")[:180],
                    integer(tg["raiting_level"], "raiting_level"), str(price),
-                   published.timestamp(), str(country.get("name") or "Не указана"),
-                   tg.get("premium") in (1, "1", True))
+                   published.timestamp(), str(country.get("name") or "Не указана")[:80],
+                   tg.get("premium") in (1, "1", True), attributes)
 
     def message(self):
         price = f"{Decimal(self.price):,.2f}".replace(",", " ").rstrip("0").rstrip(".")
@@ -128,7 +154,8 @@ class Listing:
                 "<i>Комиссия сайта в цену продавца не включена.</i>")
 
     def keyboard(self):
-        return {"inline_keyboard": [[{"text": "Открыть объявление", "url": f"{SITE}/telegram/{self.id}"}]]}
+        return {"inline_keyboard": [[{"text": "Открыть объявление", "url": f"{SITE}/telegram/{self.id}"}],
+                                    [{"text": "⚙️ Настройки", "callback_data": "nav:filters"}]]}
 
 
 class Market:
@@ -137,10 +164,11 @@ class Market:
         self.page_delay = page_delay
         self.transport = transport
 
-    def page(self, number):
+    def page(self, number, filters=None):
         # These are the same public endpoint, category and sort used by the website.
         params = {"category": "telegram", "page": number,
-                  "orderBy": "time_add", "orderType": "DESC", "raitingLevelFrom": 2}
+                  "orderBy": "time_add", "orderType": "DESC"}
+        params.update(DEFAULT_FILTERS if filters is None else filters)
         payload = self.transport(API + "/items?" + urlencode(params))
         if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
             raise SchemaError("На сайте изменилась структура списка объявлений")
@@ -153,14 +181,14 @@ class Market:
             raise SchemaError("Сайт не применил сортировку по дате: мониторинг приостановлен")
         return items, payload["hasMore"]
 
-    def since(self, cutoff, stop):
+    def since(self, cutoff, stop, filters=None):
         found = {}
         fingerprints = set()
         newest = None
         for page in range(1, self.max_pages + 1):
             if stop.is_set():
                 raise ServiceError("Остановка")
-            items, more = self.page(page)
+            items, more = self.page(page, filters)
             fingerprint = tuple(x.id for x in items)
             if items and fingerprint in fingerprints:
                 raise SchemaError("Сайт повторяет одну страницу: проверьте пагинацию")
@@ -192,7 +220,68 @@ class State:
                 keyboard TEXT NOT NULL, sent INTEGER NOT NULL DEFAULT 0,
                 attempts INTEGER NOT NULL DEFAULT 0, next_try REAL NOT NULL DEFAULT 0,
                 PRIMARY KEY(item_id,chat_id));
+            CREATE TABLE IF NOT EXISTS profiles(id TEXT PRIMARY KEY, filters TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS watch_seen(profile TEXT NOT NULL, id INTEGER NOT NULL, PRIMARY KEY(profile,id));
+            CREATE TABLE IF NOT EXISTS ui(chat_id INTEGER PRIMARY KEY, message_id INTEGER, pending TEXT NOT NULL DEFAULT '{}');
         """)
+        columns = {x[1] for x in self.db.execute("PRAGMA table_info(chats)")}
+        with self.db:
+            if "profile" not in columns:
+                self.db.execute("ALTER TABLE chats ADD COLUMN profile TEXT NOT NULL DEFAULT ''")
+            self.db.execute("INSERT OR IGNORE INTO profiles VALUES('',?)", (canonical(DEFAULT_FILTERS),))
+            # Upgrade the previous database without replaying already observed listings.
+            self.db.execute("INSERT OR IGNORE INTO watch_seen SELECT '',id FROM seen")
+
+    @staticmethod
+    def key(profile, name):
+        return f"profile:{profile}:{name}" if profile else name
+
+    def profile_filters(self, profile=""):
+        with self.lock:
+            row = self.db.execute("SELECT filters FROM profiles WHERE id=?", (profile,)).fetchone()
+            return json.loads(row[0]) if row else dict(DEFAULT_FILTERS)
+
+    def chat_profile(self, chat_id):
+        with self.lock:
+            row = self.db.execute("SELECT profile FROM chats WHERE id=?", (chat_id,)).fetchone()
+            return row[0] if row else ""
+
+    def chat_filters(self, chat_id):
+        return self.profile_filters(self.chat_profile(chat_id))
+
+    def set_filters(self, chat_id, filters):
+        encoded = canonical(filters)
+        profile = "" if encoded == canonical(DEFAULT_FILTERS) else hashlib.sha256(encoded.encode()).hexdigest()[:24]
+        with self.lock, self.db:
+            if self.chat_profile(chat_id) == profile:
+                return profile
+            self.db.execute("INSERT OR IGNORE INTO profiles VALUES(?,?)", (profile, encoded))
+            if not self.db.execute("SELECT 1 FROM chats WHERE active=1 AND profile=?", (profile,)).fetchone():
+                self.reset_profile_cursor(profile)
+            self.db.execute("INSERT OR IGNORE INTO chats(id,active,profile) VALUES(?,0,?)", (chat_id, profile))
+            self.db.execute("UPDATE chats SET profile=? WHERE id=?", (profile, chat_id))
+            self.db.execute("DELETE FROM outbox WHERE chat_id=? AND sent=0", (chat_id,))
+        return profile
+
+    def reset_profile_cursor(self, profile):
+        for name in ("baseline", "watermark", "last_success", "error"):
+            self.db.execute("DELETE FROM settings WHERE key=?", (self.key(profile, name),))
+
+    def active_profiles(self):
+        with self.lock:
+            return [x[0] for x in self.db.execute("SELECT DISTINCT profile FROM chats WHERE active=1 ORDER BY profile")]
+
+    def ui_get(self, chat_id):
+        with self.lock:
+            row = self.db.execute("SELECT message_id,pending FROM ui WHERE chat_id=?", (chat_id,)).fetchone()
+            return {"message_id": row[0], "pending": json.loads(row[1])} if row else {"message_id": None, "pending": {}}
+
+    def ui_set(self, chat_id, message_id=None, pending=None):
+        with self.lock, self.db:
+            previous = self.ui_get(chat_id)
+            self.db.execute("INSERT OR REPLACE INTO ui VALUES(?,?,?)", (chat_id,
+                            previous["message_id"] if message_id is None else message_id,
+                            json.dumps(previous["pending"] if pending is None else pending)))
 
     def get(self, key):
         with self.lock:
@@ -205,7 +294,13 @@ class State:
 
     def subscribe(self, chat_id, active):
         with self.lock, self.db:
-            self.db.execute("INSERT OR REPLACE INTO chats VALUES(?,?)", (chat_id, int(active)))
+            was_active = self.is_active(chat_id)
+            profile = self.chat_profile(chat_id)
+            if active and not was_active and not self.db.execute(
+                    "SELECT 1 FROM chats WHERE active=1 AND profile=? AND id<>?", (profile, chat_id)).fetchone():
+                self.reset_profile_cursor(profile)
+            self.db.execute("INSERT INTO chats(id,active) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET active=excluded.active",
+                            (chat_id, int(active)))
             if not active:
                 self.db.execute("DELETE FROM outbox WHERE chat_id=? AND sent=0", (chat_id,))
 
@@ -223,29 +318,36 @@ class State:
                 if chat[0] not in allowed:
                     self.subscribe(chat[0], False)
 
-    def baseline(self, items, now=None):
+    def baseline(self, items, now=None, profile=""):
         cutoff = max((x.published for x in items), default=now if now is not None else time.time())
         with self.lock, self.db:
-            self.db.executemany("INSERT OR IGNORE INTO seen VALUES(?)", [(x.id,) for x in items])
+            self.db.executemany("INSERT OR IGNORE INTO watch_seen VALUES(?,?)", [(profile, x.id) for x in items])
             for key in ("baseline", "watermark"):
-                self.db.execute("INSERT OR REPLACE INTO settings VALUES(?,?)", (key, str(cutoff)))
+                self.db.execute("INSERT OR REPLACE INTO settings VALUES(?,?)", (self.key(profile, key), str(cutoff)))
 
-    def ingest(self, items, newest):
+    def ingest(self, items, newest, profile="", catalog=None):
         # Outbox insertion, seen IDs and checkpoint commit together.
         with self.lock, self.db:
-            baseline = float(self.get("baseline"))
-            chats = self.db.execute("SELECT id FROM chats WHERE active=1").fetchall()
+            saved_baseline = self.get(self.key(profile, "baseline"))
+            if saved_baseline is None:
+                # A subscription can be resumed while an earlier network scan is in flight.
+                self.baseline(items, profile=profile)
+                self.db.execute("INSERT OR REPLACE INTO settings VALUES(?,?)", (self.key(profile, "last_success"), str(time.time())))
+                return 0
+            baseline = float(saved_baseline)
+            filters = self.profile_filters(profile)
+            chats = self.db.execute("SELECT id FROM chats WHERE active=1 AND profile=?", (profile,)).fetchall()
             count = 0
             for item in items:
-                fresh = self.db.execute("INSERT OR IGNORE INTO seen VALUES(?)", (item.id,)).rowcount
-                if fresh and item.level >= 2 and item.published >= baseline:
+                fresh = self.db.execute("INSERT OR IGNORE INTO watch_seen VALUES(?,?)", (profile, item.id)).rowcount
+                if fresh and matches(item, filters, catalog) and item.published >= baseline:
                     for chat in chats:
                         self.db.execute("INSERT OR IGNORE INTO outbox(item_id,chat_id,text,keyboard) VALUES(?,?,?,?)",
                                         (item.id, chat[0], item.message(), json.dumps(item.keyboard())))
                     count += 1
-            old = float(self.get("watermark"))
-            self.db.execute("INSERT OR REPLACE INTO settings VALUES('watermark',?)", (str(max(old, newest or old)),))
-            self.db.execute("INSERT OR REPLACE INTO settings VALUES('last_success',?)", (str(time.time()),))
+            old = float(self.get(self.key(profile, "watermark")))
+            self.db.execute("INSERT OR REPLACE INTO settings VALUES(?,?)", (self.key(profile, "watermark"), str(max(old, newest or old))))
+            self.db.execute("INSERT OR REPLACE INTO settings VALUES(?,?)", (self.key(profile, "last_success"), str(time.time())))
             return count
 
     def pending(self):
@@ -264,15 +366,21 @@ class State:
 
 
 class Telegram:
-    def __init__(self, token, transport=request_json):
+    def __init__(self, token, transport=request_json, banner=None):
         self.base = f"https://api.telegram.org/bot{token}/"
         self.transport = transport
+        self.banner = Path(banner or ROOT / "banner.jpg")
+        self.photo_file_id = None
 
-    def call(self, method, **payload):
-        data = self.transport(self.base + method, payload, timeout=50)
+    def call(self, method, files=None, **payload):
+        kwargs = {"timeout": 50}
+        if files:
+            kwargs["files"] = files
+        data = self.transport(self.base + method, payload, **kwargs)
         if not isinstance(data, dict) or data.get("ok") is not True:
             raise ServiceError("Telegram отклонил запрос", data.get("error_code", 0) if isinstance(data, dict) else 0,
-                               data.get("parameters", {}).get("retry_after", 0) if isinstance(data, dict) else 0)
+                               data.get("parameters", {}).get("retry_after", 0) if isinstance(data, dict) else 0,
+                               data.get("description", "") if isinstance(data, dict) else "")
         return data["result"]
 
     def send(self, chat_id, text, keyboard=None):
@@ -281,6 +389,28 @@ class Telegram:
         if keyboard:
             payload["reply_markup"] = keyboard
         return self.call("sendMessage", **payload)
+
+    def screen(self, chat_id, text, keyboard, message_id=None):
+        payload = {"chat_id": chat_id, "caption": text, "parse_mode": "HTML", "reply_markup": keyboard}
+        if message_id:
+            try:
+                return self.call("editMessageCaption", message_id=message_id, **payload)
+            except ServiceError as exc:
+                if exc.code == 400 and "not modified" in exc.description.lower():
+                    return {"message_id": message_id}
+                if exc.code != 400 or not any(x in exc.description.lower() for x in ("not found", "can't be edited", "cannot be edited", "no caption")):
+                    raise
+        if self.photo_file_id:
+            try:
+                return self.call("sendPhoto", photo=self.photo_file_id, **payload)
+            except ServiceError as exc:
+                if exc.code != 400:
+                    raise
+                self.photo_file_id = None
+        result = self.call("sendPhoto", files={"photo": self.banner}, **payload)
+        if result.get("photo"):
+            self.photo_file_id = result["photo"][-1]["file_id"]
+        return result
 
 
 class Bot:
@@ -292,38 +422,63 @@ class Bot:
         self.started = time.time()
         self.error = ""
         self.delivery_error = ""
+        self.request_lock = threading.Lock()
+        self.check_profiles = set()
+        self.catalog = Catalog()
+        from menus import Menus
+        self.menus = Menus(self)
 
-    def scan(self):
-        if self.state.get("baseline") is None:
-            items, _ = self.market.page(1)
-            self.state.baseline(items)
-            self.state.set("last_success", time.time())
+    def request_check(self, chat_id):
+        with self.request_lock:
+            self.check_profiles.add(self.state.chat_profile(chat_id))
+        self.wake.set()
+
+    def scan(self, profile=""):
+        filters = self.catalog.validate(self.state.profile_filters(profile))
+        key = lambda name: self.state.key(profile, name)
+        if self.state.get(key("baseline")) is None:
+            items, _ = self.market.page(1, filters)
+            self.state.baseline(items, profile=profile)
+            self.state.set(key("last_success"), time.time())
             LOG.info("Начальная точка сохранена; старые объявления не отправляются")
             return
-        cutoff = max(float(self.state.get("baseline")), float(self.state.get("watermark")) - 300)
-        items, newest = self.market.since(cutoff, self.stop)
-        count = self.state.ingest(items, newest)
-        LOG.info("Проверено объявлений: %s; новых с рейтингом 2+: %s", len(items), count)
+        cutoff = max(float(self.state.get(key("baseline"))), float(self.state.get(key("watermark"))) - 300)
+        items, newest = self.market.since(cutoff, self.stop, filters)
+        count = self.state.ingest(items, newest, profile, self.catalog)
+        LOG.info("Проверено объявлений: %s; новых по фильтрам: %s", len(items), count)
 
     def monitor(self):
         failures = 0
         while not self.stop.is_set():
             self.wake.clear()
-            try:
-                self.scan()
-                self.error = ""
-                failures = 0
-                delay = self.cfg["poll_seconds"]
-            except ServiceError as exc:
-                self.error = str(exc)
-                failures += 1
-                delay = max(exc.retry_after, min(600, self.cfg["poll_seconds"] * 2 ** min(failures, 5)))
-                LOG.warning("Проверка не выполнена: %s. Повтор через %s сек.", exc, delay)
-            except Exception:
-                # Do not expose unexpected exception messages that could contain request URLs.
-                self.error = "Внутренняя ошибка; проверьте конфигурацию и базу данных"
-                LOG.error(self.error)
-                delay = 60
+            with self.request_lock:
+                profiles = sorted(set(self.state.active_profiles()) | self.check_profiles)
+                self.check_profiles.clear()
+            errors = []
+            retry_after = 0
+            for index, profile in enumerate(profiles):
+                if self.stop.is_set():
+                    break
+                try:
+                    self.scan(profile)
+                    self.state.set(self.state.key(profile, "error"), "")
+                except (ServiceError, ValueError) as exc:
+                    error = str(exc)
+                    errors.append(error)
+                    self.state.set(self.state.key(profile, "error"), error)
+                    retry_after = max(retry_after, getattr(exc, "retry_after", 0))
+                    LOG.warning("Проверка не выполнена: %s", error)
+                    if getattr(exc, "code", 0) in (403, 429):
+                        break
+                except Exception:
+                    errors.append("Внутренняя ошибка проверки")
+                    self.state.set(self.state.key(profile, "error"), errors[-1])
+                    LOG.error(errors[-1])
+                if index + 1 < len(profiles) and self.stop.wait(1):
+                    break
+            self.error = errors[0] if errors else ""
+            failures = failures + 1 if errors else 0
+            delay = max(retry_after, min(600, self.cfg["poll_seconds"] * 2 ** min(failures, 5)))
             # A manual /check must never bypass a site's rate-limit/backoff window.
             if failures:
                 self.stop.wait(delay)
@@ -338,7 +493,10 @@ class Bot:
             if not self.state.is_active(row["chat_id"]):
                 continue
             try:
-                self.tg.send(row["chat_id"], row["text"], json.loads(row["keyboard"]))
+                if hasattr(self.tg, "screen"):
+                    self.tg.screen(row["chat_id"], row["text"], json.loads(row["keyboard"]))
+                else:
+                    self.tg.send(row["chat_id"], row["text"], json.loads(row["keyboard"]))
                 self.state.sent(row["item_id"], row["chat_id"])
                 self.delivery_error = ""
             except ServiceError as exc:
@@ -373,43 +531,62 @@ class Bot:
             return
         chat_id = chat["id"]
         if self.cfg["allowed_chat_ids"] and chat_id not in self.cfg["allowed_chat_ids"]:
-            self.tg.send(chat_id, "Этот бот доступен только владельцу.")
+            self.menus.show(chat_id, "Этот бот доступен только владельцу.", [])
             return
         text = message.get("text", "").strip()
         command = text.split()[0].split("@")[0].lower() if text else ""
+        if command.startswith("/"):
+            self.state.ui_set(chat_id, pending={})
         if command == "/start":
             self.state.subscribe(chat_id, True)
-            status = "Идёт подключение к сайту." if not self.state.get("last_success") else "Мониторинг сайта подключён."
-            self.tg.send(chat_id, "🔔 <b>Уведомления Tronaccs включены</b>\n\n"
-                         "Сообщу о новых объявлениях аккаунтов с <b>уровнем рейтинга от 2</b>.\n"
-                         f"Проверка каждые {self.cfg['poll_seconds']} сек.\n{status}\n\n"
-                         "/stop — выключить уведомления\n/status — состояние\n/check — запросить проверку\n"
-                         f"Ваш ID: <code>{chat_id}</code>")
+            self.wake.set()
+            self.state.ui_set(chat_id, pending={})
+            self.menus.home(chat_id)
         elif command == "/stop":
             self.state.subscribe(chat_id, False)
-            self.tg.send(chat_id, "Уведомления выключены. Включить снова: /start")
+            self.state.ui_set(chat_id, pending={})
+            self.menus.home(chat_id)
         elif command == "/check":
-            self.wake.set()
-            self.tg.send(chat_id, "Проверка запрошена. Новые подходящие объявления придут отдельными сообщениями.")
+            self.request_check(chat_id)
+            self.menus.home(chat_id, "Проверка запрошена.")
         elif command == "/status":
-            last = self.state.get("last_success")
-            stamp = datetime.fromtimestamp(float(last), timezone.utc).strftime("%d.%m.%Y %H:%M:%S UTC") if last else "ещё не было"
-            self.tg.send(chat_id, f"Уведомления: {'включены' if self.state.is_active(chat_id) else 'выключены'}\n"
-                         f"Минимальный уровень: 2\nПроверка каждые {self.cfg['poll_seconds']} сек.\n"
-                         f"Последняя успешная проверка: {stamp}\n"
-                         f"Сайт: {html.escape(self.error) if self.error else 'работает' if last else 'подключается'}\n"
-                         f"Доставка: {html.escape(self.delivery_error) if self.delivery_error else 'без ошибок'}")
+            self.menus.status(chat_id)
+        elif command in ("/settings", "/filters"):
+            self.state.ui_set(chat_id, pending={})
+            self.menus.filters(chat_id)
+        elif command in ("/menu", "/cancel"):
+            self.state.ui_set(chat_id, pending={})
+            self.menus.home(chat_id)
+        elif command == "/help":
+            self.menus.help(chat_id)
+        elif self.state.ui_get(chat_id)["pending"]:
+            self.menus.input(chat_id, text)
         else:
-            self.tg.send(chat_id, "Команды: /start, /stop, /status, /check")
+            self.menus.home(chat_id)
+
+    def callback(self, query):
+        message = query.get("message") or {}
+        chat = message.get("chat") or {}
+        chat_id = chat.get("id")
+        allowed = not self.cfg["allowed_chat_ids"] or chat_id in self.cfg["allowed_chat_ids"]
+        if chat.get("type") != "private" or query.get("from", {}).get("id") != chat_id or not allowed:
+            self.tg.call("answerCallbackQuery", callback_query_id=query["id"], text="Нет доступа")
+            return
+        self.tg.call("answerCallbackQuery", callback_query_id=query["id"])
+        # Buttons on earlier notifications may also open the settings menu.
+        self.state.ui_set(chat_id, message_id=message["message_id"])
+        self.menus.callback(chat_id, query.get("data", ""))
 
     def polling(self):
         offset = int(self.state.get("telegram_offset") or 0)
         while not self.stop.is_set():
             try:
-                updates = self.tg.call("getUpdates", offset=offset, timeout=30, allowed_updates=["message"])
+                updates = self.tg.call("getUpdates", offset=offset, timeout=30, allowed_updates=["message", "callback_query"])
                 for update in updates:
                     if "message" in update:
                         self.command(update["message"])
+                    elif "callback_query" in update:
+                        self.callback(update["callback_query"])
                     offset = update["update_id"] + 1
                     self.state.set("telegram_offset", offset)
             except ServiceError as exc:
@@ -449,9 +626,11 @@ def serve_health(bot):
             if self.path not in ("/", "/health"):
                 self.send_error(404)
                 return
-            last = bot.state.get("last_success")
-            healthy = bool(last and time.time() - float(last) < max(180, bot.cfg["poll_seconds"] * 4) and not bot.error)
-            body = json.dumps({"running": not bot.stop.is_set(), "market_ok": healthy}).encode()
+            profiles = bot.state.active_profiles()
+            checks = [bot.state.get(bot.state.key(profile, "last_success")) for profile in profiles]
+            healthy = not bot.stop.is_set() and not bot.error and all(
+                stamp and time.time() - float(stamp) < max(180, bot.cfg["poll_seconds"] * 4) for stamp in checks)
+            body = json.dumps({"running": not bot.stop.is_set(), "market_ok": bool(profiles) and healthy}).encode()
             self.send_response(200 if self.path == "/" or healthy else 503)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -515,3 +694,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

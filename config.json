@@ -1,5 +1,5 @@
 {
-  "bot_token": "8991371202:AAEEwGX5ACGI5pM8Zn7kMyHtpvpU0BnCN3IE",
+  "bot_token": "",
   "poll_seconds": 30,
   "max_scan_pages": 200,
   "allowed_chat_ids": [],
