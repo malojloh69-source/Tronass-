@@ -172,6 +172,7 @@ def matches(item, query, catalog=None):
                "raitingStars": attrs.get("raiting_stars"), "stars": attrs.get("stars"),
                "contacts": attrs.get("contacts"), "dialogs": attrs.get("dialogs"),
                "channels": attrs.get("channels"), "chats": attrs.get("chats"),
+               "giftsRegular": attrs.get("gifts_count"), "giftsNft": attrs.get("unique_gifts_count"),
                "adminChannels": attrs.get("admin_channels_count"), "adminChats": attrs.get("admin_chats_count")}
     for name, value in numbers.items():
         if value is None:

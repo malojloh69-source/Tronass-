@@ -15,7 +15,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_CEILING
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -23,6 +23,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from filters import Catalog, DEFAULT_FILTERS, canonical, matches
+from keyboards import red_keyboard
 
 API = "https://api.tronaccs.market"
 SITE = "https://tronaccs.market"
@@ -68,7 +69,7 @@ def request_json(url, payload=None, timeout=30, files=None):
             raw = response.read(8 * 1024 * 1024 + 1)
             if len(raw) > 8 * 1024 * 1024:
                 raise SchemaError("Ответ сервиса слишком большой")
-            return json.loads(raw)
+            return json.loads(raw, parse_float=Decimal)
     except HTTPError as exc:
         retry = exc.headers.get("Retry-After", "0")
         data = {}
@@ -99,6 +100,24 @@ def integer(value, field):
         return int(value)
     except ValueError:
         raise SchemaError(f"Неверное поле {field}") from None
+
+
+def optional_count(value):
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        return None
+    try:
+        number = int(value)
+        return number if number >= 0 else None
+    except ValueError:
+        return None
+
+
+def exact_price(value):
+    """Use the source decimal value, including every fractional digit."""
+    whole, _, fraction = format(Decimal(str(value)), "f").partition(".")
+    whole = f"{int(whole):,}".replace(",", " ")
+    fraction = fraction.rstrip("0")
+    return whole + ("." + fraction if fraction else "")
 
 
 @dataclass(frozen=True)
@@ -133,7 +152,8 @@ class Listing:
             raise SchemaError("Некорректная цена или дата объявления") from None
         country = tg.get("country") or {}
         attributes = {key: tg[key] for key in ("raiting_stars", "stars", "contacts", "dialogs", "channels", "chats",
-                      "two_factor", "spamblock", "admin_channels_count", "admin_chats_count") if key in tg}
+                      "two_factor", "spamblock", "admin_channels_count", "admin_chats_count",
+                      "gifts_count", "unique_gifts_count") if key in tg}
         attributes.update({"country_id": country.get("id"), "country_code": country.get("countryCode"),
                            "origin_id": (raw.get("item_origin") or {}).get("id"),
                            "seller": (raw.get("seller") or {}).get("username")})
@@ -143,19 +163,34 @@ class Listing:
                    tg.get("premium") in (1, "1", True), attributes)
 
     def message(self):
-        price = f"{Decimal(self.price):,.2f}".replace(",", " ").rstrip("0").rstrip(".")
+        price = exact_price(self.price)
+        rate = self.attributes.get("commission_percent")
+        price_lines = f"💰 Цена продавца: <b>{price} ₽</b>\n"
+        if rate is not None:
+            amount = Decimal(self.price)
+            percent = Decimal(str(rate))
+            # Same formula as the website: price + ceil(price * percent / 100).
+            total = amount + (amount * percent / 100).to_integral_value(rounding=ROUND_CEILING)
+            price_lines += f"Цена с публичной комиссией {exact_price(percent)}%: <b>{exact_price(total)} ₽</b>\n"
+        twofa = self.attributes.get("two_factor")
+        twofa = "Есть" if twofa in (1, "1", True) else "Нет" if twofa in (0, "0", False) else "Нет данных"
+        gifts = optional_count(self.attributes.get("gifts_count"))
+        nft = optional_count(self.attributes.get("unique_gifts_count"))
         return (f"🔔 <b>Новый аккаунт — рейтинг {self.level}</b>\n\n"
                 f"{html.escape(self.title)}\n"
                 f"⭐ Уровень рейтинга: <b>{self.level}</b>\n"
-                f"💰 Цена продавца: <b>{price} ₽</b>\n"
+                f"{price_lines}"
                 f"🌍 Страна: {html.escape(self.country)}\n"
-                f"💎 Premium: {'Да' if self.premium else 'Нет'}\n\n"
+                f"💎 Premium: {'Да' if self.premium else 'Нет'}\n"
+                f"🔐 2FA: <b>{twofa}</b>\n"
+                f"🎁 Обычные подарки: <b>{gifts if gifts is not None else 'Нет данных'}</b>\n"
+                f"💎 NFT-подарки: <b>{nft if nft is not None else 'Нет данных'}</b>\n\n"
                 f"Объявление #{self.id}\n"
-                "<i>Комиссия сайта в цену продавца не включена.</i>")
+                "<i>Цены на момент проверки. Персональная комиссия — в карточке.</i>")
 
     def keyboard(self):
-        return {"inline_keyboard": [[{"text": "Открыть объявление", "url": f"{SITE}/telegram/{self.id}"}],
-                                    [{"text": "⚙️ Настройки", "callback_data": "nav:filters"}]]}
+        return red_keyboard({"inline_keyboard": [[{"text": "Открыть объявление", "url": f"{SITE}/telegram/{self.id}"}],
+                                    [{"text": "⚙️ Настройки", "callback_data": "nav:filters"}]]})
 
 
 class Market:
@@ -163,6 +198,40 @@ class Market:
         self.max_pages = max_pages
         self.page_delay = page_delay
         self.transport = transport
+        self._commission_cache = None
+        self._commission_time = 0
+
+    def commission(self):
+        if self._commission_cache is not None and time.monotonic() - self._commission_time < 60:
+            return self._commission_cache
+        payload = self.transport(API + "/user/settings/commission")
+        try:
+            if isinstance(payload, bool) or not isinstance(payload, (str, int, float, Decimal)):
+                raise ValueError()
+            rate = Decimal(str(payload))
+            if not rate.is_finite() or not 0 <= rate <= 100:
+                raise ValueError()
+        except (InvalidOperation, ValueError):
+            raise SchemaError("Сайт вернул некорректную публичную комиссию") from None
+        self._commission_cache, self._commission_time = rate, time.monotonic()
+        return rate
+
+    def enrich(self, item):
+        # The listing feed omits gift counts. The public account card includes them
+        # and is also the latest available source of the seller's exact price.
+        payload = self.transport(API + f"/tg-accounts/{item.id}")
+        details = Listing.parse(payload)
+        if details.id != item.id:
+            raise SchemaError("Сайт вернул карточку другого объявления")
+        attributes = {**item.attributes, **details.attributes}
+        try:
+            attributes["commission_percent"] = str(self.commission())
+        except ServiceError as exc:
+            if exc.code == 429 or exc.retry_after:
+                raise
+            LOG.warning("Публичная комиссия недоступна (HTTP %s); будет показана только цена продавца", exc.code)
+        return Listing(details.id, details.title, details.level, details.price,
+                       item.published, details.country, details.premium, attributes)
 
     def page(self, number, filters=None):
         # These are the same public endpoint, category and sort used by the website.
@@ -350,6 +419,17 @@ class State:
             self.db.execute("INSERT OR REPLACE INTO settings VALUES(?,?)", (self.key(profile, "last_success"), str(time.time())))
             return count
 
+    def needs_notification(self, item, profile="", catalog=None):
+        with self.lock:
+            baseline = self.get(self.key(profile, "baseline"))
+            if baseline is None or item.published < float(baseline):
+                return False
+            if not self.db.execute("SELECT 1 FROM chats WHERE active=1 AND profile=?", (profile,)).fetchone():
+                return False
+            if self.db.execute("SELECT 1 FROM watch_seen WHERE profile=? AND id=?", (profile, item.id)).fetchone():
+                return False
+            return matches(item, self.profile_filters(profile), catalog)
+
     def pending(self):
         with self.lock:
             return self.db.execute("""SELECT o.* FROM outbox o JOIN chats c ON c.id=o.chat_id
@@ -373,6 +453,8 @@ class Telegram:
         self.photo_file_id = None
 
     def call(self, method, files=None, **payload):
+        if "reply_markup" in payload:
+            payload["reply_markup"] = red_keyboard(payload["reply_markup"])
         kwargs = {"timeout": 50}
         if files:
             kwargs["files"] = files
@@ -444,6 +526,23 @@ class Bot:
             return
         cutoff = max(float(self.state.get(key("baseline"))), float(self.state.get(key("watermark"))) - 300)
         items, newest = self.market.since(cutoff, self.stop, filters)
+        checked = []
+        detail_requests = 0
+        for item in items:
+            if self.state.needs_notification(item, profile, self.catalog):
+                if detail_requests and self.stop.wait(self.market.page_delay):
+                    raise ServiceError("Остановка")
+                detail_requests += 1
+                try:
+                    item = self.market.enrich(item)
+                except ServiceError as exc:
+                    if exc.code == 429 or exc.retry_after:
+                        raise
+                    # Keep a detected listing even if its detail page is unavailable.
+                    # Missing gift counts are explicitly shown as unknown, never as zero.
+                    LOG.warning("Не удалось уточнить карточку #%s (HTTP %s)", item.id, exc.code)
+            checked.append(item)
+        items = checked
         count = self.state.ingest(items, newest, profile, self.catalog)
         LOG.info("Проверено объявлений: %s; новых по фильтрам: %s", len(items), count)
 
@@ -554,6 +653,8 @@ class Bot:
         elif command in ("/settings", "/filters"):
             self.state.ui_set(chat_id, pending={})
             self.menus.filters(chat_id)
+        elif command == "/rating":
+            self.menus.field(chat_id, "ratingLevel")
         elif command in ("/menu", "/cancel"):
             self.state.ui_set(chat_id, pending={})
             self.menus.home(chat_id)

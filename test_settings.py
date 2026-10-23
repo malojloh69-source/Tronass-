@@ -210,12 +210,19 @@ class SettingsTests(unittest.TestCase):
         calls = []
         new = False
         def transport(url):
+            if url.endswith("/user/settings/commission"):
+                return 15
+            rows = [raw(1, 5, 0)] + ([raw(2, 3, 1), raw(3, 6, 2)] if new else [])
+            if "/tg-accounts/" in url:
+                item_id = int(url.rsplit("/", 1)[-1])
+                row = next(x for x in rows if x["id"] == item_id)
+                row["telegram"].update({"gifts_count":0,"unique_gifts_count":0})
+                return row
             query = parse_qs(urlsplit(url).query)
             minimum = int(query["raitingLevelFrom"][0])
             calls.append(minimum)
-            rows = [raw(1, 5, 0)] + ([raw(2, 3, 1), raw(3, 6, 2)] if new else [])
             return {"data": sorted([x for x in rows if x["telegram"]["raiting_level"] >= minimum], key=lambda x:x["time_add"], reverse=True), "hasMore": False}
-        self.bot.market = Market(transport=transport)
+        self.bot.market = Market(transport=transport, page_delay=0)
         self.bot.scan()
         self.bot.scan(profile)
         self.assertFalse(self.state.pending())

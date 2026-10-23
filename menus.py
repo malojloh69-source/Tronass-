@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlencode
 
 from filters import ANY, DEFAULT_FILTERS
+from keyboards import red_keyboard
 
 SITE = "https://tronaccs.market"
 
@@ -13,7 +14,7 @@ SITE = "https://tronaccs.market"
 def button(text, data):
     if len(data.encode()) > 64:
         raise ValueError("Слишком длинная команда кнопки")
-    return {"text": text, "callback_data": data}
+    return {"text": text, "callback_data": data, "style": "danger"}
 
 
 def escaped(value, length=100):
@@ -29,7 +30,7 @@ class Menus:
         self.searches = {}
 
     def show(self, chat_id, text, rows):
-        keyboard = {"inline_keyboard": rows}
+        keyboard = red_keyboard({"inline_keyboard": rows})
         saved = self.state.ui_get(chat_id)
         if hasattr(self.bot.tg, "screen"):
             result = self.bot.tg.screen(chat_id, text, keyboard, saved["message_id"])
@@ -55,6 +56,7 @@ class Menus:
         if notice:
             text += "\n\n" + escaped(notice, 110)
         rows = [[button("⚙️ Настроить фильтры", "nav:filters")],
+                [button(f"Рейтинг: {self.catalog.value('ratingLevel', self.state.chat_filters(chat_id))}", "fld:ratingLevel")],
                 [button("⏸ Остановить" if active else "▶️ Включить", "monitor:off" if active else "monitor:on"),
                  button("🔄 Проверить", "check")],
                 [button("📊 Статус", "nav:status"), button("❔ Помощь", "nav:help")]]
@@ -62,7 +64,7 @@ class Menus:
 
     def filters(self, chat_id):
         rows = [[button(title, "grp:" + key + ":0")] for key, title, _ in self.catalog.groups()]
-        rows += [[button("⭐ Рейтинг 2+", "quick:rating"), button("🌐 Все аккаунты", "quick:all")],
+        rows += [[button(f"Рейтинг: {self.catalog.value('ratingLevel', self.state.chat_filters(chat_id))}", "fld:ratingLevel"), button("🌐 Все аккаунты", "quick:all")],
                  [button("🔗 Поиск на сайте", "nav:link"), button("↺ Сбросить", "reset:ask")], self.back()]
         text = "<b>⚙️ Фильтры мониторинга</b>\n\n" + self.summary(chat_id, 5) + "\n\nВыберите раздел. Изменения сохраняются сразу."
         self.show(chat_id, text, rows)
@@ -97,6 +99,8 @@ class Menus:
         else:
             rows.append([button("✏️ Изменить", "input:" + key), button("Любое", "clear:" + key)])
             if key == "ratingLevel":
+                low, high = [query.get(x, "—") for x in self.catalog.keys(key)]
+                rows.append([button(f"От: {low}", "bound:ratingLevel:from"), button(f"До: {high}", "bound:ratingLevel:to")])
                 rows.append([button("2+", "preset:2"), button("3+", "preset:3"), button("5+", "preset:5")])
         rows.append(self.back(f"grp:{self.catalog.group(key)}:0", "‹ В раздел"))
         if notice:
@@ -133,6 +137,9 @@ class Menus:
         self.state.ui_set(chat_id, pending={"key": key, "mode": mode})
         if mode == "search":
             instruction = "Напишите название или код страны, например: Россия или RU. Для происхождения — часть названия."
+        elif mode in ("bound_from", "bound_to"):
+            bound = "минимальный" if mode == "bound_from" else "максимальный"
+            instruction = f"Напишите {bound} уровень рейтинга одним числом.\nНапример: <code>3</code>\nСнять эту границу: <code>-</code>\nВторая граница и другие фильтры сохранятся."
         elif field["type"] == "number-range":
             instruction = "Напишите две границы через пробел.\nНапример: <code>2 5</code>\nТолько от: <code>2 -</code>\nТолько до: <code>- 5</code>\nЛюбое значение: <code>-</code>"
         elif field["type"] == "number":
@@ -161,6 +168,12 @@ class Menus:
                 self.searches[(chat_id, key)] = "" if text.casefold() in ANY else text
                 self.state.ui_set(chat_id, pending={})
                 self.select(chat_id, key)
+            elif mode in ("bound_from", "bound_to"):
+                params = self.catalog.keys(key)
+                values = [self.state.chat_filters(chat_id).get(param, "-") for param in params]
+                values[0 if mode == "bound_from" else 1] = text.strip()
+                self.save(chat_id, key, values)
+                self.field(chat_id, key, "Граница рейтинга сохранена.")
             else:
                 self.save(chat_id, key, None if text.strip().casefold() in ANY else text)
                 self.field(chat_id, key, "Сохранено. Новые объявления будут проверяться по этим условиям.")
@@ -187,7 +200,7 @@ class Menus:
                 "3. Включите мониторинг.\n\n"
                 "Уведомления приходят о новых подходящих объявлениях. Текущий каталог при первом подключении не рассылается.\n\n"
                 "Настройки сохраняются отдельно для каждого пользователя. После смены набора условий сначала устанавливается новая точка отсчёта.\n\n"
-                "/settings — фильтры\n/status — состояние\n/stop — пауза\n/start — включить\n/menu — главное меню")
+                "/settings — фильтры\n/rating — уровень рейтинга\n/status — состояние\n/stop — пауза\n/start — включить\n/menu — главное меню")
         self.show(chat_id, text, [self.back()])
 
     def callback(self, chat_id, data):
@@ -203,8 +216,10 @@ class Menus:
                     getattr(self, target)(chat_id)
                 elif target == "link":
                     params = {"category": "telegram", **self.state.chat_filters(chat_id), "orderBy": "time_add", "orderType": "DESC"}
-                    self.show(chat_id, "<b>🔗 Ваш поиск на Tronaccs</b>\n\nКнопка откроет страницу с выбранными условиями.",
-                              [[{"text": "Открыть поиск", "url": SITE + "/market?" + urlencode(params)}], self.back("nav:filters", "‹ Фильтры")])
+                    value = self.catalog.value("ratingLevel", self.state.chat_filters(chat_id))
+                    self.show(chat_id, f"<b>🔗 Ваш поиск на Tronaccs</b>\n\nУровень рейтинга: <b>{escaped(value)}</b>\nКнопка откроет страницу с выбранными условиями.",
+                              [[button("Изменить рейтинг", "fld:ratingLevel")],
+                               [{"text": "Открыть поиск", "url": SITE + "/market?" + urlencode(params)}], self.back("nav:filters", "‹ Фильтры")])
                 else:
                     raise ValueError("Раздел не найден.")
             elif action == "grp":
@@ -213,6 +228,10 @@ class Menus:
                 self.field(chat_id, parts[1])
             elif action in ("input", "search"):
                 self.prompt(chat_id, parts[1], "search" if action == "search" else "value")
+            elif action == "bound":
+                if parts[1] != "ratingLevel" or parts[2] not in ("from", "to"):
+                    raise ValueError("Неизвестная граница рейтинга.")
+                self.prompt(chat_id, parts[1], "bound_" + parts[2])
             elif action == "select":
                 self.select(chat_id, parts[1], int(parts[2]))
             elif action == "allopts":
@@ -235,7 +254,10 @@ class Menus:
                 self.save(chat_id, "ratingLevel", [parts[1], "-"])
                 self.field(chat_id, "ratingLevel", "Сохранено")
             elif action == "quick":
-                self.state.set_filters(chat_id, dict(DEFAULT_FILTERS) if parts[1] == "rating" else {})
+                if parts[1] == "rating":
+                    self.save(chat_id, "ratingLevel", [2, "-"])
+                else:
+                    self.state.set_filters(chat_id, {})
                 self.bot.wake.set()
                 self.filters(chat_id)
             elif action == "monitor":
