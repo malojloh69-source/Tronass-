@@ -177,9 +177,14 @@ class Listing:
         twofa = "Есть" if twofa in (1, "1", True) else "Нет" if twofa in (0, "0", False) else "Нет данных"
         gifts = optional_count(self.attributes.get("gifts_count"))
         nft = optional_count(self.attributes.get("unique_gifts_count"))
+        try:
+            rating = integer(self.attributes.get("raiting_stars"), "raiting_stars")
+        except SchemaError:
+            rating = "Нет данных"
         return (f"🔔 <b>Новый аккаунт — рейтинг {self.level}</b>\n\n"
                 f"{html.escape(self.title)}\n"
                 f"⭐ Уровень рейтинга: <b>{self.level}</b>\n"
+                f"Количество рейтинга: <b>{rating}</b>\n"
                 f"{price_lines}"
                 f"🌍 Страна: {html.escape(self.country)}\n"
                 f"💎 Premium: {'Да' if self.premium else 'Нет'}\n"

@@ -60,13 +60,18 @@ class DetailTests(unittest.TestCase):
         observed=[]
         def transport(url):
             observed.append(url)
-            return 15 if url.endswith("/user/settings/commission") else detail(price="456.789")
+            if url.endswith("/user/settings/commission"):
+                return 15
+            item = detail(price="456.789")
+            item["telegram"]["raiting_stars"] = 7654
+            return item
         market=Market(transport=transport)
         item=market.enrich(Listing.parse(raw(2,4,1)))
         self.assertTrue(observed[0].endswith("/tg-accounts/2"))
         self.assertEqual(item.price,"456.789")
         self.assertEqual(item.attributes["gifts_count"],7)
         self.assertEqual(item.attributes["unique_gifts_count"],3)
+        self.assertIn("Количество рейтинга: <b>7654</b>", item.message())
         self.assertFalse(matches(item,{"giftsRegularFrom":8}))
         self.assertTrue(matches(item,{"giftsRegularFrom":7,"giftsNftTo":3}))
 
@@ -107,6 +112,25 @@ class DetailTests(unittest.TestCase):
         listing.attributes["commission_percent"]="15"
         plain=html.unescape(re.sub(r"<[^>]*>","",listing.message()))
         self.assertLessEqual(len(plain.encode("utf-16-le"))//2,1024)
+
+    def test_notification_shows_rating_amount_separately_from_level(self):
+        for amount in (6543, "12345", 0, -8):
+            with self.subTest(amount=amount):
+                item = raw(level=2, stars=amount)
+                # The Stars balance is a different field from the rating amount.
+                item["telegram"]["stars"] = 999
+                message = Listing.parse(item).message()
+                self.assertIn("Уровень рейтинга: <b>2</b>", message)
+                self.assertIn(f"Количество рейтинга: <b>{amount}</b>", message)
+
+    def test_missing_or_invalid_rating_amount_is_unknown(self):
+        item = raw()
+        del item["telegram"]["raiting_stars"]
+        self.assertIn("Количество рейтинга: <b>Нет данных</b>", Listing.parse(item).message())
+        for bad in (None, True, "2.5", "<b>wrong</b>"):
+            with self.subTest(amount=bad):
+                item["telegram"]["raiting_stars"] = bad
+                self.assertIn("Количество рейтинга: <b>Нет данных</b>", Listing.parse(item).message())
 
 
 class BotIntegrationTests(unittest.TestCase):
