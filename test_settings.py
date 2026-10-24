@@ -33,6 +33,9 @@ class SettingsTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.path = Path(self.temp.name) / "state.sqlite3"
         self.state = State(self.path)
+        self.state.activate_admin(42)
+        self.state.register_user(43)
+        self.state.change_access(42, 43, True)
         self.tg = PhotoTelegram()
         self.bot = Bot({"poll_seconds": 30, "allowed_chat_ids": []}, self.state, None, self.tg)
         self.catalog = self.bot.catalog
@@ -245,6 +248,12 @@ class SettingsTests(unittest.TestCase):
         db.close()
         upgraded = State(old_path)
         try:
+            self.assertFalse(upgraded.has_access(42))
+            self.assertFalse(upgraded.is_active(42))
+            self.assertIsNotNone(upgraded.db.execute("SELECT id FROM watch_seen WHERE profile='' AND id=1").fetchone())
+            upgraded.activate_admin(42)
+            upgraded.subscribe(42, True)
+            upgraded.baseline([Listing.parse(raw(1))])
             upgraded.ingest([Listing.parse(raw(1)), Listing.parse(raw(2, 4, 1))], stamp + 1)
             self.assertEqual([x["item_id"] for x in upgraded.pending()], [2])
             self.assertEqual(upgraded.chat_filters(42), DEFAULT_FILTERS)

@@ -32,6 +32,7 @@ class BotTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.path = Path(self.temp.name) / "state.sqlite3"
         self.state = State(self.path)
+        self.state.activate_admin(42)
 
     def tearDown(self):
         self.state.db.close()
@@ -180,22 +181,24 @@ class BotTests(unittest.TestCase):
         self.state.subscribe(42, True)
         self.assertEqual(len(self.state.pending()), 0)
 
-    def test_private_chat_and_optional_allowlist(self):
+    def test_private_chat_and_access_gate(self):
         bot = self.bot()
         bot.command({"chat": {"id": -1, "type": "group"}, "text": "/start"})
         self.assertFalse(self.state.is_active(-1))
-        bot.cfg["allowed_chat_ids"] = [42]
         bot.command({"chat": {"id": 43, "type": "private"}, "text": "/start"})
         self.assertFalse(self.state.is_active(43))
         bot.command({"chat": {"id": 42, "type": "private"}, "text": "/start"})
         self.assertTrue(self.state.is_active(42))
 
-    def test_new_allowlist_removes_previous_subscribers_and_queue(self):
+    def test_revocation_removes_subscriber_and_pending_queue(self):
+        self.state.register_user(43)
+        self.state.change_access(42, 43, True)
         self.state.subscribe(43, True)
         self.state.baseline([Listing.parse(raw(1))])
         item = Listing.parse(raw(2, 4, 1))
         self.state.ingest([item], item.published)
-        Bot({"poll_seconds": 30, "allowed_chat_ids": [42]}, self.state, None, FakeTelegram())
+        self.state.change_access(42, 43, False)
+        Bot({"poll_seconds": 30}, self.state, None, FakeTelegram())
         self.assertFalse(self.state.is_active(43))
         self.assertEqual(len(self.state.pending()), 0)
 

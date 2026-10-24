@@ -7,6 +7,7 @@ from urllib.parse import urlencode
 
 from filters import ANY, DEFAULT_FILTERS
 from keyboards import red_keyboard
+from access import DENIED_TEXT, OWNER_URL
 
 SITE = "https://tronaccs.market"
 
@@ -29,11 +30,11 @@ class Menus:
         self.catalog = bot.catalog
         self.searches = {}
 
-    def show(self, chat_id, text, rows):
+    def show(self, chat_id, text, rows, force_new=False):
         keyboard = red_keyboard({"inline_keyboard": rows})
         saved = self.state.ui_get(chat_id)
         if hasattr(self.bot.tg, "screen"):
-            result = self.bot.tg.screen(chat_id, text, keyboard, saved["message_id"])
+            result = self.bot.tg.screen(chat_id, text, keyboard, None if force_new else saved["message_id"])
         else:
             result = self.bot.tg.send(chat_id, text, keyboard)
         if isinstance(result, dict) and result.get("message_id"):
@@ -47,7 +48,10 @@ class Menus:
         lines = self.catalog.summary(self.state.chat_filters(chat_id), limit)
         return "\n".join(escaped(x, 85) for x in lines) if lines else "Все аккаунты Telegram · без ограничений"
 
-    def home(self, chat_id, notice=""):
+    def denied(self, chat_id, force_new=False):
+        self.show(chat_id, DENIED_TEXT, [[{"text": "Написать Владельцу", "url": OWNER_URL}]], force_new=force_new)
+
+    def home(self, chat_id, notice="", force_new=False):
         active = self.state.is_active(chat_id)
         text = ("<b>Tronaccs Трекер</b>\n"
                 f"{'🟢 Мониторинг включён' if active else '⏸ Мониторинг выключен'}\n\n"
@@ -60,7 +64,9 @@ class Menus:
                 [button("⏸ Остановить" if active else "▶️ Включить", "monitor:off" if active else "monitor:on"),
                  button("🔄 Проверить", "check")],
                 [button("📊 Статус", "nav:status"), button("❔ Помощь", "nav:help")]]
-        self.show(chat_id, text, rows)
+        if self.state.is_admin(chat_id):
+            rows.append([button("Админ-панель", "nav:admin")])
+        self.show(chat_id, text, rows, force_new=force_new)
 
     def filters(self, chat_id):
         rows = [[button(title, "grp:" + key + ":0")] for key, title, _ in self.catalog.groups()]
@@ -190,8 +196,7 @@ class Menus:
                 f"Проверка каждые {self.bot.cfg['poll_seconds']} сек.\n"
                 f"Успешная проверка: {stamp}\n"
                 f"Сайт: {escaped(error, 170) if error else 'работает' if last else 'ожидает первой проверки'}\n"
-                f"Доставка: {escaped(self.bot.delivery_error, 100) if self.bot.delivery_error else 'без ошибок'}\n\n"
-                f"Ваш ID: <code>{chat_id}</code>")
+                f"Доставка: {escaped(self.bot.delivery_error, 100) if self.bot.delivery_error else 'без ошибок'}")
         self.show(chat_id, text, [[button("🔄 Проверить", "check"), button("⚙️ Фильтры", "nav:filters")], self.back()])
 
     def help(self, chat_id):
@@ -214,6 +219,8 @@ class Menus:
                 target = parts[1]
                 if target in ("home", "filters", "status", "help"):
                     getattr(self, target)(chat_id)
+                elif target == "admin":
+                    self.bot.admin.home(chat_id)
                 elif target == "link":
                     params = {"category": "telegram", **self.state.chat_filters(chat_id), "orderBy": "time_add", "orderType": "DESC"}
                     value = self.catalog.value("ratingLevel", self.state.chat_filters(chat_id))

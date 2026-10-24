@@ -24,6 +24,7 @@ from urllib.request import Request, urlopen
 
 from filters import Catalog, DEFAULT_FILTERS, canonical, matches
 from keyboards import red_keyboard
+from access import is_admin_entry
 
 API = "https://api.tronaccs.market"
 SITE = "https://tronaccs.market"
@@ -292,6 +293,10 @@ class State:
             CREATE TABLE IF NOT EXISTS profiles(id TEXT PRIMARY KEY, filters TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS watch_seen(profile TEXT NOT NULL, id INTEGER NOT NULL, PRIMARY KEY(profile,id));
             CREATE TABLE IF NOT EXISTS ui(chat_id INTEGER PRIMARY KEY, message_id INTEGER, pending TEXT NOT NULL DEFAULT '{}');
+            CREATE TABLE IF NOT EXISTS access_users(
+                id INTEGER PRIMARY KEY, username TEXT NOT NULL DEFAULT '', name TEXT NOT NULL DEFAULT '',
+                has_access INTEGER NOT NULL DEFAULT 0, is_admin INTEGER NOT NULL DEFAULT 0,
+                requested INTEGER NOT NULL DEFAULT 0, created REAL NOT NULL, updated REAL NOT NULL);
         """)
         columns = {x[1] for x in self.db.execute("PRAGMA table_info(chats)")}
         with self.db:
@@ -300,6 +305,72 @@ class State:
             self.db.execute("INSERT OR IGNORE INTO profiles VALUES('',?)", (canonical(DEFAULT_FILTERS),))
             # Upgrade the previous database without replaying already observed listings.
             self.db.execute("INSERT OR IGNORE INTO watch_seen SELECT '',id FROM seen")
+            self.db.execute("INSERT OR IGNORE INTO access_users(id,created,updated) SELECT id,?,? FROM chats", (time.time(), time.time()))
+            # Existing subscriptions do not bypass the newly enabled access gate.
+            self.db.execute("UPDATE chats SET active=0 WHERE NOT EXISTS(SELECT 1 FROM access_users u WHERE u.id=chats.id AND u.has_access=1)")
+            self.db.execute("DELETE FROM outbox WHERE sent=0 AND NOT EXISTS(SELECT 1 FROM access_users u WHERE u.id=outbox.chat_id AND u.has_access=1)")
+
+    def register_user(self, chat_id, username="", name=""):
+        now = time.time()
+        with self.lock, self.db:
+            self.db.execute("""INSERT INTO access_users(id,username,name,created,updated) VALUES(?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET username=excluded.username,name=excluded.name,updated=excluded.updated""",
+                            (chat_id, str(username or "").lstrip("@")[:64], str(name or "")[:120], now, now))
+
+    def has_access(self, chat_id):
+        with self.lock:
+            row = self.db.execute("SELECT has_access FROM access_users WHERE id=?", (chat_id,)).fetchone()
+            return bool(row and row[0])
+
+    def is_admin(self, chat_id):
+        with self.lock:
+            row = self.db.execute("SELECT is_admin FROM access_users WHERE id=?", (chat_id,)).fetchone()
+            return bool(row and row[0])
+
+    def request_access(self, chat_id):
+        with self.lock, self.db:
+            self.db.execute("INSERT OR IGNORE INTO access_users(id,created,updated) VALUES(?,?,?)", (chat_id, time.time(), time.time()))
+            self.db.execute("UPDATE access_users SET requested=1,updated=? WHERE id=? AND has_access=0", (time.time(), chat_id))
+
+    def activate_admin(self, chat_id):
+        with self.lock, self.db:
+            self.db.execute("INSERT OR IGNORE INTO access_users(id,created,updated) VALUES(?,?,?)", (chat_id, time.time(), time.time()))
+            self.db.execute("UPDATE access_users SET has_access=1,is_admin=1,requested=0,updated=? WHERE id=?", (time.time(), chat_id))
+
+    def change_access(self, actor_id, target_id, allowed):
+        with self.lock, self.db:
+            if not self.is_admin(actor_id):
+                raise PermissionError("Нет доступа к управлению пользователями")
+            target = self.db.execute("SELECT * FROM access_users WHERE id=?", (target_id,)).fetchone()
+            if not target:
+                raise ValueError("Пользователь должен сначала написать боту.")
+            if target["is_admin"] and not allowed:
+                raise ValueError("Доступ администратора остаётся открытым.")
+            self.db.execute("UPDATE access_users SET has_access=?,requested=0,updated=? WHERE id=?", (int(allowed), time.time(), target_id))
+            if not allowed:
+                self.subscribe(target_id, False)
+                self.ui_set(target_id, pending={})
+
+    def access_user(self, chat_id):
+        with self.lock:
+            return self.db.execute("SELECT * FROM access_users WHERE id=?", (chat_id,)).fetchone()
+
+    def access_list(self, scope="pending", page=0):
+        clauses = {"pending": "has_access=0 AND requested=1", "allowed": "has_access=1", "all": "1=1"}
+        if scope not in clauses:
+            raise ValueError("Неизвестный список пользователей")
+        with self.lock:
+            clause = clauses[scope]
+            total = self.db.execute("SELECT COUNT(*) FROM access_users WHERE " + clause).fetchone()[0]
+            pages = max(1, (total + 7) // 8)
+            page = max(0, min(int(page), pages - 1))
+            users = self.db.execute("SELECT * FROM access_users WHERE " + clause + " ORDER BY updated DESC,id LIMIT 8 OFFSET ?", (page * 8,)).fetchall()
+            return users, page, pages, total
+
+    def access_counts(self):
+        with self.lock:
+            row = self.db.execute("SELECT COUNT(*),COALESCE(SUM(has_access),0),COALESCE(SUM(has_access=0 AND requested=1),0) FROM access_users").fetchone()
+            return tuple(row)
 
     @staticmethod
     def key(profile, name):
@@ -338,7 +409,7 @@ class State:
 
     def active_profiles(self):
         with self.lock:
-            return [x[0] for x in self.db.execute("SELECT DISTINCT profile FROM chats WHERE active=1 ORDER BY profile")]
+            return [x[0] for x in self.db.execute("SELECT DISTINCT c.profile FROM chats c JOIN access_users u ON u.id=c.id WHERE c.active=1 AND u.has_access=1 ORDER BY c.profile")]
 
     def ui_get(self, chat_id):
         with self.lock:
@@ -363,6 +434,8 @@ class State:
 
     def subscribe(self, chat_id, active):
         with self.lock, self.db:
+            if active and not self.has_access(chat_id):
+                raise PermissionError("Нет доступа к трекеру")
             was_active = self.is_active(chat_id)
             profile = self.chat_profile(chat_id)
             if active and not was_active and not self.db.execute(
@@ -377,15 +450,6 @@ class State:
         with self.lock:
             row = self.db.execute("SELECT active FROM chats WHERE id=?", (chat_id,)).fetchone()
             return bool(row and row[0])
-
-    def restrict_chats(self, allowed):
-        if not allowed:
-            return
-        with self.lock:
-            chats = self.db.execute("SELECT id FROM chats WHERE active=1").fetchall()
-            for chat in chats:
-                if chat[0] not in allowed:
-                    self.subscribe(chat[0], False)
 
     def baseline(self, items, now=None, profile=""):
         cutoff = max((x.published for x in items), default=now if now is not None else time.time())
@@ -405,7 +469,7 @@ class State:
                 return 0
             baseline = float(saved_baseline)
             filters = self.profile_filters(profile)
-            chats = self.db.execute("SELECT id FROM chats WHERE active=1 AND profile=?", (profile,)).fetchall()
+            chats = self.db.execute("SELECT c.id FROM chats c JOIN access_users u ON u.id=c.id WHERE c.active=1 AND u.has_access=1 AND c.profile=?", (profile,)).fetchall()
             count = 0
             for item in items:
                 fresh = self.db.execute("INSERT OR IGNORE INTO watch_seen VALUES(?,?)", (profile, item.id)).rowcount
@@ -424,7 +488,7 @@ class State:
             baseline = self.get(self.key(profile, "baseline"))
             if baseline is None or item.published < float(baseline):
                 return False
-            if not self.db.execute("SELECT 1 FROM chats WHERE active=1 AND profile=?", (profile,)).fetchone():
+            if not self.db.execute("SELECT 1 FROM chats c JOIN access_users u ON u.id=c.id WHERE c.active=1 AND u.has_access=1 AND c.profile=?", (profile,)).fetchone():
                 return False
             if self.db.execute("SELECT 1 FROM watch_seen WHERE profile=? AND id=?", (profile, item.id)).fetchone():
                 return False
@@ -432,8 +496,8 @@ class State:
 
     def pending(self):
         with self.lock:
-            return self.db.execute("""SELECT o.* FROM outbox o JOIN chats c ON c.id=o.chat_id
-                WHERE o.sent=0 AND c.active=1 AND o.next_try<=? ORDER BY o.rowid LIMIT 30""", (time.time(),)).fetchall()
+            return self.db.execute("""SELECT o.* FROM outbox o JOIN chats c ON c.id=o.chat_id JOIN access_users u ON u.id=c.id
+                WHERE o.sent=0 AND c.active=1 AND u.has_access=1 AND o.next_try<=? ORDER BY o.rowid LIMIT 30""", (time.time(),)).fetchall()
 
     def sent(self, item_id, chat_id):
         with self.lock, self.db:
@@ -498,7 +562,6 @@ class Telegram:
 class Bot:
     def __init__(self, settings, state, market, telegram):
         self.cfg, self.state, self.market, self.tg = settings, state, market, telegram
-        self.state.restrict_chats(settings["allowed_chat_ids"])
         self.stop = threading.Event()
         self.wake = threading.Event()
         self.started = time.time()
@@ -506,11 +569,33 @@ class Bot:
         self.delivery_error = ""
         self.request_lock = threading.Lock()
         self.check_profiles = set()
+        self.auth_attempts = {}
         self.catalog = Catalog()
         from menus import Menus
         self.menus = Menus(self)
+        from admin_panel import AdminPanel
+        self.admin = AdminPanel(self)
+
+    def try_admin_entry(self, chat_id, text):
+        now = time.monotonic()
+        attempts = [stamp for stamp in self.auth_attempts.get(chat_id, []) if now - stamp < 60]
+        if len(attempts) >= 10:
+            return False
+        attempts.append(now)
+        self.auth_attempts[chat_id] = attempts
+        if not is_admin_entry(text):
+            return False
+        self.auth_attempts.pop(chat_id, None)
+        self.state.activate_admin(chat_id)
+        self.state.subscribe(chat_id, True)
+        self.state.ui_set(chat_id, pending={})
+        self.wake.set()
+        self.admin.home(chat_id, force_new=True)
+        return True
 
     def request_check(self, chat_id):
+        if not self.state.has_access(chat_id):
+            return
         with self.request_lock:
             self.check_profiles.add(self.state.chat_profile(chat_id))
         self.wake.set()
@@ -589,7 +674,7 @@ class Bot:
             if self.stop.is_set():
                 return
             # /stop could have removed the subscription after pending() was read.
-            if not self.state.is_active(row["chat_id"]):
+            if not self.state.is_active(row["chat_id"]) or not self.state.has_access(row["chat_id"]):
                 continue
             try:
                 if hasattr(self.tg, "screen"):
@@ -629,18 +714,26 @@ class Bot:
         if chat.get("type") != "private":
             return
         chat_id = chat["id"]
-        if self.cfg["allowed_chat_ids"] and chat_id not in self.cfg["allowed_chat_ids"]:
-            self.menus.show(chat_id, "Этот бот доступен только владельцу.", [])
-            return
+        sender = message.get("from") or chat
+        name = " ".join(str(sender.get(key) or "") for key in ("first_name", "last_name")).strip()
+        self.state.register_user(chat_id, sender.get("username", ""), name)
         text = message.get("text", "").strip()
         command = text.split()[0].split("@")[0].lower() if text else ""
+        normal = {"/start", "/stop", "/check", "/status", "/settings", "/filters", "/rating", "/menu", "/cancel", "/help", "/admin"}
+        if command not in normal and text.startswith("/") and self.try_admin_entry(chat_id, text):
+            return
+        if not self.state.has_access(chat_id):
+            self.state.request_access(chat_id)
+            self.state.ui_set(chat_id, pending={})
+            self.menus.denied(chat_id, force_new=command == "/start")
+            return
         if command.startswith("/"):
             self.state.ui_set(chat_id, pending={})
         if command == "/start":
             self.state.subscribe(chat_id, True)
             self.wake.set()
             self.state.ui_set(chat_id, pending={})
-            self.menus.home(chat_id)
+            self.menus.home(chat_id, force_new=True)
         elif command == "/stop":
             self.state.subscribe(chat_id, False)
             self.state.ui_set(chat_id, pending={})
@@ -660,6 +753,8 @@ class Bot:
             self.menus.home(chat_id)
         elif command == "/help":
             self.menus.help(chat_id)
+        elif command == "/admin":
+            self.admin.home(chat_id)
         elif self.state.ui_get(chat_id)["pending"]:
             self.menus.input(chat_id, text)
         else:
@@ -669,14 +764,26 @@ class Bot:
         message = query.get("message") or {}
         chat = message.get("chat") or {}
         chat_id = chat.get("id")
-        allowed = not self.cfg["allowed_chat_ids"] or chat_id in self.cfg["allowed_chat_ids"]
-        if chat.get("type") != "private" or query.get("from", {}).get("id") != chat_id or not allowed:
+        if chat.get("type") != "private" or query.get("from", {}).get("id") != chat_id:
             self.tg.call("answerCallbackQuery", callback_query_id=query["id"], text="Нет доступа")
+            return
+        sender = query.get("from") or {}
+        name = " ".join(str(sender.get(key) or "") for key in ("first_name", "last_name")).strip()
+        self.state.register_user(chat_id, sender.get("username", ""), name)
+        if not self.state.has_access(chat_id):
+            self.state.request_access(chat_id)
+            self.state.ui_set(chat_id, message_id=message["message_id"], pending={})
+            self.tg.call("answerCallbackQuery", callback_query_id=query["id"], text="Нет доступа")
+            self.menus.denied(chat_id)
             return
         self.tg.call("answerCallbackQuery", callback_query_id=query["id"])
         # Buttons on earlier notifications may also open the settings menu.
         self.state.ui_set(chat_id, message_id=message["message_id"])
-        self.menus.callback(chat_id, query.get("data", ""))
+        data = query.get("data", "")
+        if data.startswith("adm:"):
+            self.admin.callback(chat_id, data)
+        else:
+            self.menus.callback(chat_id, data)
 
     def polling(self):
         offset = int(self.state.get("telegram_offset") or 0)
@@ -705,7 +812,7 @@ class Bot:
 
 def load_config():
     cfg = {"bot_token": "", "poll_seconds": 30, "max_scan_pages": 200,
-           "allowed_chat_ids": [], "database": "state.sqlite3", "port": 3000}
+           "database": "state.sqlite3", "port": 3000}
     path = ROOT / "config.json"
     if path.exists():
         cfg.update(json.loads(path.read_text(encoding="utf-8")))
@@ -713,7 +820,7 @@ def load_config():
     cfg["port"] = int(os.getenv("PORT") or cfg["port"])
     cfg["poll_seconds"] = int(cfg["poll_seconds"])
     cfg["max_scan_pages"] = int(cfg["max_scan_pages"])
-    cfg["allowed_chat_ids"] = [int(x) for x in cfg["allowed_chat_ids"]]
+    cfg.pop("allowed_chat_ids", None)
     if cfg["poll_seconds"] < 15 or cfg["max_scan_pages"] < 1:
         raise ValueError("poll_seconds должен быть >=15, max_scan_pages >=1")
     if not 0 <= cfg["port"] <= 65535:

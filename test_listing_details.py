@@ -113,6 +113,7 @@ class BotIntegrationTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory()
         self.state=State(Path(self.temp.name)/"state.sqlite3")
+        self.state.activate_admin(42)
         self.tg=PhotoTelegram()
         self.bot=Bot({"poll_seconds":30,"allowed_chat_ids":[]},self.state,None,self.tg)
         self.bot.command({"chat":{"id":42,"type":"private"},"text":"/start"})
