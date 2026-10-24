@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tronaccs configurable tracker. Python 3.10+, standard library only."""
+"""Tronaccs configurable tracker. Python 3.10+; Pillow for gift photographs."""
 from __future__ import annotations
 
 import argparse
@@ -12,6 +12,7 @@ import signal
 import sqlite3
 import threading
 import time
+import tempfile
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -25,6 +26,8 @@ from urllib.request import Request, urlopen
 from filters import Catalog, DEFAULT_FILTERS, canonical, matches
 from keyboards import red_keyboard
 from access import is_admin_entry
+from gifts import GiftCatalog, gift_details, gift_caption
+from gift_photos import PhotoError, photo_jpeg
 
 API = "https://api.tronaccs.market"
 SITE = "https://tronaccs.market"
@@ -158,6 +161,7 @@ class Listing:
         attributes.update({"country_id": country.get("id"), "country_code": country.get("countryCode"),
                            "origin_id": (raw.get("item_origin") or {}).get("id"),
                            "seller": (raw.get("seller") or {}).get("username")})
+        attributes["gift_details"] = gift_details(tg)
         return cls(item_id, str(raw.get("title") or "Аккаунт Telegram")[:180],
                    integer(tg["raiting_level"], "raiting_level"), str(price),
                    published.timestamp(), str(country.get("name") or "Не указана")[:80],
@@ -200,12 +204,13 @@ class Listing:
 
 
 class Market:
-    def __init__(self, max_pages=200, page_delay=1.0, transport=request_json):
+    def __init__(self, max_pages=200, page_delay=1.0, transport=request_json, gift_catalog=None):
         self.max_pages = max_pages
         self.page_delay = page_delay
         self.transport = transport
         self._commission_cache = None
         self._commission_time = 0
+        self.gift_catalog = gift_catalog or GiftCatalog()
 
     def commission(self):
         if self._commission_cache is not None and time.monotonic() - self._commission_time < 60:
@@ -229,7 +234,11 @@ class Market:
         details = Listing.parse(payload)
         if details.id != item.id:
             raise SchemaError("Сайт вернул карточку другого объявления")
+        tg = payload["telegram"]
+        if tg.get("gifts") or tg.get("unique_gifts"):
+            self.gift_catalog.refresh()
         attributes = {**item.attributes, **details.attributes}
+        attributes["gift_details"] = gift_details(tg, self.gift_catalog)
         try:
             attributes["commission_percent"] = str(self.commission())
         except ServiceError as exc:
@@ -307,6 +316,11 @@ class State:
         with self.db:
             if "profile" not in columns:
                 self.db.execute("ALTER TABLE chats ADD COLUMN profile TEXT NOT NULL DEFAULT ''")
+            outbox_columns = {x[1] for x in self.db.execute("PRAGMA table_info(outbox)")}
+            if "gift_parts" not in outbox_columns:
+                self.db.execute("ALTER TABLE outbox ADD COLUMN gift_parts TEXT NOT NULL DEFAULT '[]'")
+            if "next_part" not in outbox_columns:
+                self.db.execute("ALTER TABLE outbox ADD COLUMN next_part INTEGER NOT NULL DEFAULT 0")
             self.db.execute("INSERT OR IGNORE INTO profiles VALUES('',?)", (canonical(DEFAULT_FILTERS),))
             # Upgrade the previous database without replaying already observed listings.
             self.db.execute("INSERT OR IGNORE INTO watch_seen SELECT '',id FROM seen")
@@ -480,8 +494,9 @@ class State:
                 fresh = self.db.execute("INSERT OR IGNORE INTO watch_seen VALUES(?,?)", (profile, item.id)).rowcount
                 if fresh and matches(item, filters, catalog) and item.published >= baseline:
                     for chat in chats:
-                        self.db.execute("INSERT OR IGNORE INTO outbox(item_id,chat_id,text,keyboard) VALUES(?,?,?,?)",
-                                        (item.id, chat[0], item.message(), json.dumps(item.keyboard())))
+                        self.db.execute("INSERT OR IGNORE INTO outbox(item_id,chat_id,text,keyboard,gift_parts) VALUES(?,?,?,?,?)",
+                                        (item.id, chat[0], item.message(), json.dumps(item.keyboard()),
+                                         json.dumps(item.attributes.get("gift_details", []), ensure_ascii=False)))
                     count += 1
             old = float(self.get(self.key(profile, "watermark")))
             self.db.execute("INSERT OR REPLACE INTO settings VALUES(?,?)", (self.key(profile, "watermark"), str(max(old, newest or old))))
@@ -508,6 +523,11 @@ class State:
         with self.lock, self.db:
             self.db.execute("UPDATE outbox SET sent=1 WHERE item_id=? AND chat_id=?", (item_id, chat_id))
 
+    def advance_delivery(self, item_id, chat_id, next_part):
+        with self.lock, self.db:
+            self.db.execute("UPDATE outbox SET next_part=?,attempts=0,next_try=0 WHERE item_id=? AND chat_id=?",
+                            (next_part, item_id, chat_id))
+
     def retry(self, row, delay):
         with self.lock, self.db:
             self.db.execute("UPDATE outbox SET attempts=attempts+1,next_try=? WHERE item_id=? AND chat_id=?",
@@ -520,6 +540,7 @@ class Telegram:
         self.transport = transport
         self.banner = Path(banner or ROOT / "banner.jpg")
         self.photo_file_id = None
+        self.gift_photo_ids = {}
 
     def call(self, method, files=None, **payload):
         if "reply_markup" in payload:
@@ -562,6 +583,57 @@ class Telegram:
         if result.get("photo"):
             self.photo_file_id = result["photo"][-1]["file_id"]
         return result
+
+    def gift(self, chat_id, part, item_id, allow_fallback=False):
+        caption = gift_caption(part, item_id)
+        cache_key = (part.get("photo", ""), part.get("thumbnail_file_id", ""))
+        cached = self.gift_photo_ids.get(cache_key)
+        if cached:
+            try:
+                return self.call("sendPhoto", chat_id=chat_id, photo=cached, caption=caption, parse_mode="HTML")
+            except ServiceError as exc:
+                if exc.code != 400:
+                    raise
+                self.gift_photo_ids.pop(cache_key, None)
+        image = None
+        error = PhotoError(400)
+        if part.get("thumbnail_file_id"):
+            try:
+                info = self.call("getFile", file_id=part["thumbnail_file_id"])
+                path = info.get("file_path", "")
+                if path and not path.startswith("/") and ".." not in path:
+                    file_base = self.base.replace("/bot", "/file/bot", 1)
+                    image = photo_jpeg(file_base + path, telegram_file=True)
+            except (PhotoError, ServiceError) as exc:
+                error = exc
+                if exc.code in (401, 429):
+                    raise ServiceError("Не удалось получить фото подарка из Telegram", exc.code, exc.retry_after) from None
+        if image is None and part.get("photo"):
+            try:
+                image = photo_jpeg(part["photo"])
+            except PhotoError as exc:
+                error = exc
+        if image is not None:
+            with tempfile.TemporaryDirectory(prefix="tron-gift-") as temp:
+                path = Path(temp) / "gift.jpg"
+                path.write_bytes(image)
+                try:
+                    result = self.call("sendPhoto", chat_id=chat_id, caption=caption, parse_mode="HTML", files={"photo": path})
+                    if result.get("photo"):
+                        if len(self.gift_photo_ids) >= 128:
+                            self.gift_photo_ids.pop(next(iter(self.gift_photo_ids)))
+                        self.gift_photo_ids[cache_key] = result["photo"][-1]["file_id"]
+                    return result
+                except ServiceError as exc:
+                    if exc.code != 400:
+                        raise
+                    error = exc
+        if not allow_fallback and (error.code == 0 or error.code >= 500 or error.code == 429):
+            raise ServiceError("Фото подарка временно недоступно", error.code, error.retry_after) from None
+        text = caption + "\nФото сейчас недоступно."
+        if part.get("photo"):
+            text += f' <a href="{html.escape(part["photo"], quote=True)}">Открыть изображение</a>'
+        return self.send(chat_id, text)
 
 
 class Bot:
@@ -682,11 +754,28 @@ class Bot:
             if not self.state.is_active(row["chat_id"]) or not self.state.has_access(row["chat_id"]):
                 continue
             try:
-                if hasattr(self.tg, "screen"):
-                    self.tg.screen(row["chat_id"], row["text"], json.loads(row["keyboard"]))
+                parts = json.loads(row["gift_parts"])
+                for index in range(row["next_part"], len(parts) + 1):
+                    if self.stop.is_set() or not self.state.is_active(row["chat_id"]) or not self.state.has_access(row["chat_id"]):
+                        break
+                    if index == 0:
+                        if hasattr(self.tg, "screen"):
+                            self.tg.screen(row["chat_id"], row["text"], json.loads(row["keyboard"]))
+                        else:
+                            self.tg.send(row["chat_id"], row["text"], json.loads(row["keyboard"]))
+                    else:
+                        part = parts[index - 1]
+                        if part.get("kind") == "notice":
+                            text = f"Объявление #{row['item_id']}\n" + html.escape(part["text"])
+                            self.tg.call("sendMessage", chat_id=row["chat_id"], text=text, parse_mode="HTML")
+                        else:
+                            attempts = row["attempts"] if index == row["next_part"] else 0
+                            self.tg.gift(row["chat_id"], part, row["item_id"], allow_fallback=attempts >= 3)
+                    self.state.advance_delivery(row["item_id"], row["chat_id"], index + 1)
+                    if index < len(parts) and self.stop.wait(1.1):
+                        return
                 else:
-                    self.tg.send(row["chat_id"], row["text"], json.loads(row["keyboard"]))
-                self.state.sent(row["item_id"], row["chat_id"])
+                    self.state.sent(row["item_id"], row["chat_id"])
                 self.delivery_error = ""
             except ServiceError as exc:
                 self.delivery_error = str(exc)
@@ -880,6 +969,8 @@ def main():
         hook = telegram.call("getWebhookInfo")
         if hook.get("url"):
             raise ValueError("У бота включён webhook. Используйте отдельного бота или отключите webhook перед запуском")
+        market.gift_catalog = GiftCatalog(fetch=lambda url: request_json(url, timeout=10),
+                                          telegram=telegram.call, state=state)
         bot = Bot(cfg, state, market, telegram)
         server = serve_health(bot) if cfg["port"] else None
 

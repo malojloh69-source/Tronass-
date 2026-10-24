@@ -1,1 +1,2 @@
-# Python 3.10+. Standard library only; no packages to install.
+# Python 3.10+. Pillow converts original gift artwork to JPEG.
+Pillow>=12.3,<13
