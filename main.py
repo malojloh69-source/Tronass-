@@ -579,7 +579,15 @@ class Telegram:
                 if exc.code != 400:
                     raise
                 self.photo_file_id = None
-        result = self.call("sendPhoto", files={"photo": self.banner}, **payload)
+        try:
+            result = self.call("sendPhoto", files={"photo": self.banner}, **payload)
+        except ServiceError as exc:
+            if exc.code != 400:
+                raise
+            # A rejected banner must not leave /start without a response.
+            return self.send(chat_id, text, keyboard)
+        except OSError:
+            return self.send(chat_id, text, keyboard)
         if result.get("photo"):
             self.photo_file_id = result["photo"][-1]["file_id"]
         return result
@@ -711,6 +719,7 @@ class Bot:
     def monitor(self):
         failures = 0
         while not self.stop.is_set():
+            cycle_started = time.monotonic()
             self.wake.clear()
             with self.request_lock:
                 profiles = sorted(set(self.state.active_profiles()) | self.check_profiles)
@@ -727,7 +736,8 @@ class Bot:
                     error = str(exc)
                     errors.append(error)
                     self.state.set(self.state.key(profile, "error"), error)
-                    retry_after = max(retry_after, getattr(exc, "retry_after", 0))
+                    retry_after = max(retry_after, getattr(exc, "retry_after", 0),
+                                      60 if getattr(exc, "code", 0) in (403, 429) else 0)
                     LOG.warning("Проверка не выполнена: %s", error)
                     if getattr(exc, "code", 0) in (403, 429):
                         break
@@ -739,12 +749,13 @@ class Bot:
                     break
             self.error = errors[0] if errors else ""
             failures = failures + 1 if errors else 0
-            delay = max(retry_after, min(600, self.cfg["poll_seconds"] * 2 ** min(failures, 5)))
+            delay = max(retry_after, min(600, self.cfg["poll_seconds"] * 2 ** min(failures, 8)))
             # A manual /check must never bypass a site's rate-limit/backoff window.
             if failures:
                 self.stop.wait(delay)
             else:
-                self.wake.wait(delay)
+                # Keep the requested start-to-start interval without overlapping scans.
+                self.wake.wait(max(0, self.cfg["poll_seconds"] - (time.monotonic() - cycle_started)))
 
     def deliver_once(self):
         for row in self.state.pending():
@@ -885,10 +896,22 @@ class Bot:
             try:
                 updates = self.tg.call("getUpdates", offset=offset, timeout=30, allowed_updates=["message", "callback_query"])
                 for update in updates:
-                    if "message" in update:
-                        self.command(update["message"])
-                    elif "callback_query" in update:
-                        self.callback(update["callback_query"])
+                    try:
+                        if "message" in update:
+                            self.command(update["message"])
+                        elif "callback_query" in update:
+                            self.callback(update["callback_query"])
+                    except ServiceError as exc:
+                        if exc.code not in (400, 403):
+                            raise
+                        # A permanently rejected reply in one chat must not block
+                        # later /start commands from other users.
+                        if exc.code == 403:
+                            message = update.get("message") or (update.get("callback_query") or {}).get("message") or {}
+                            chat = message.get("chat") or {}
+                            if chat.get("type") == "private" and isinstance(chat.get("id"), int):
+                                self.state.subscribe(chat["id"], False)
+                        LOG.warning("Telegram отклонил ответ на команду (HTTP %s); обработка продолжается", exc.code)
                     offset = update["update_id"] + 1
                     self.state.set("telegram_offset", offset)
             except ServiceError as exc:
