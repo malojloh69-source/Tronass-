@@ -905,7 +905,7 @@ class Bot:
 
 
 def load_config():
-    cfg = {"bot_token": "", "poll_seconds": 30, "max_scan_pages": 200,
+    cfg = {"bot_token": "", "poll_seconds": 5, "max_scan_pages": 200,
            "database": "state.sqlite3", "port": 3000}
     path = ROOT / "config.json"
     if path.exists():
@@ -915,8 +915,8 @@ def load_config():
     cfg["poll_seconds"] = int(cfg["poll_seconds"])
     cfg["max_scan_pages"] = int(cfg["max_scan_pages"])
     cfg.pop("allowed_chat_ids", None)
-    if cfg["poll_seconds"] < 15 or cfg["max_scan_pages"] < 1:
-        raise ValueError("poll_seconds должен быть >=15, max_scan_pages >=1")
+    if cfg["poll_seconds"] < 5 or cfg["max_scan_pages"] < 1:
+        raise ValueError("poll_seconds должен быть >=5, max_scan_pages >=1")
     if not 0 <= cfg["port"] <= 65535:
         raise ValueError("Некорректный порт")
     return cfg
